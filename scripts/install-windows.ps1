@@ -4,6 +4,7 @@
 param(
     [switch] $SkipTailscaleUnattended,
     [switch] $SkipKdeStartup,
+    [switch] $SkipKdeWatchdog,
     [switch] $NoLaunchKdeConnect
 )
 
@@ -23,6 +24,8 @@ try {
     $stateChanged = $false
     $unattendedEnabledThisRun = $false
     $startupCreatedThisRun = $false
+    $watchdogShortcutCreatedThisRun = $false
+    $watchdogStartedThisRun = $false
     $winget = Get-MeshClipTrustedCommand -Name winget
     if (-not $winget) {
         throw 'WinGet is required. Install or repair Windows App Installer first.'
@@ -127,6 +130,48 @@ try {
                 Write-Host '[PASS] Started KDE Connect indicator.'
             }
         }
+
+        if (-not $SkipKdeWatchdog) {
+            try {
+                $watchdogStartup = Get-MeshClipWatchdogStartupInfo
+                if ($watchdogStartup.Exists -and $watchdogStartup.OwnedAndUnchanged) {
+                    Write-Host '[PASS] KDE Connect watchdog login startup is already configured.'
+                }
+                elseif ($watchdogStartup.Exists) {
+                    throw 'A different watchdog startup shortcut exists. Refusing to overwrite it.'
+                }
+                elseif ($PSCmdlet.ShouldProcess('Current user startup folder', 'Create the silent KDE Connect watchdog shortcut')) {
+                    $watchdogResult = New-MeshClipWatchdogStartupShortcut
+                    if ($watchdogResult.Created) {
+                        $state.watchdogShortcutCreated = $true
+                        $stateChanged = $true
+                        $watchdogShortcutCreatedThisRun = $true
+                    }
+                    Write-Host '[PASS] KDE Connect watchdog login startup is configured.'
+                }
+
+                if (-not $NoLaunchKdeConnect -and
+                    -not (Get-MeshClipWatchdogProcessInfo).Running -and
+                    $PSCmdlet.ShouldProcess('KDE Connect watchdog', 'Start one silent current-session watchdog')) {
+                    $watchdogLaunch = Start-MeshClipWatchdog
+                    $watchdogStartedThisRun = $watchdogLaunch.Started
+                    Write-Host '[PASS] Started the silent KDE Connect watchdog.'
+                }
+            }
+            catch {
+                if ($watchdogStartedThisRun) {
+                    Stop-MeshClipWatchdogProcesses -ErrorAction SilentlyContinue
+                }
+                if ($watchdogShortcutCreatedThisRun) {
+                    $watchdogStartup = Get-MeshClipWatchdogStartupInfo
+                    if ($watchdogStartup.OwnedAndUnchanged) {
+                        Remove-Item -LiteralPath (Get-MeshClipPaths).WatchdogShortcut -Force
+                    }
+                    $state.watchdogShortcutCreated = $false
+                }
+                throw
+            }
+        }
     }
     else {
         Write-Warning 'KDE Connect is not yet available. If -WhatIf was used, this is expected.'
@@ -138,6 +183,22 @@ try {
         }
         catch {
             $rollbackErrors = [Collections.Generic.List[string]]::new()
+            if ($watchdogStartedThisRun) {
+                try { Stop-MeshClipWatchdogProcesses }
+                catch { $rollbackErrors.Add('watchdog process') }
+            }
+            if ($watchdogShortcutCreatedThisRun) {
+                try {
+                    $watchdogStartup = Get-MeshClipWatchdogStartupInfo
+                    if (-not $watchdogStartup.OwnedAndUnchanged) { throw 'shortcut changed' }
+                    $watchdogPaths = Get-MeshClipPaths
+                    Remove-Item -LiteralPath $watchdogPaths.WatchdogShortcut -Force
+                    if (Test-Path -LiteralPath $watchdogPaths.WatchdogStatusPath -PathType Leaf) {
+                        Remove-Item -LiteralPath $watchdogPaths.WatchdogStatusPath -Force
+                    }
+                }
+                catch { $rollbackErrors.Add('watchdog startup shortcut') }
+            }
             if ($startupCreatedThisRun) {
                 try {
                     $startup = Get-MeshClipStartupInfo

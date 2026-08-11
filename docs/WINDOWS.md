@@ -11,7 +11,9 @@ pwsh -File .\scripts\install-windows.ps1
 
 The script installs missing official WinGet packages, enables Tailscale Run
 Unattended when the device is already authenticated, verifies KDE Connect's
-login startup shortcut, and starts KDE Connect once.
+login startup shortcut, installs a silent current-user watchdog, and starts KDE
+Connect and the watchdog once. The watchdog checks every 60 seconds and starts
+only the trusted KDE Connect indicator when it is absent.
 
 If Tailscale needs authentication, complete the official browser flow and run
 the script again. Never paste an auth key into a command or chat.
@@ -72,6 +74,11 @@ files into a public issue or chat.
 `KDE peer availability` remains `WARN` until the user has manually confirmed
 the same pairing request on both computers. Device discovery alone is not
 pairing evidence.
+
+The two watchdog checks must be `PASS`: the login shortcut must still target
+the project-owned `wscript.exe` wrapper, and exactly one current-session
+watchdog must have a fresh heartbeat. Task Scheduler is not required; the
+watchdog runs only while that Windows user is logged in.
 
 ## 5. Acceptance
 

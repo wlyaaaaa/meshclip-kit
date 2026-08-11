@@ -127,6 +127,30 @@ else {
     Add-Check 'KDE Connect login startup' 'WARN' 'Startup shortcut was not found.'
 }
 
+$watchdogStartup = Get-MeshClipWatchdogStartupInfo
+if ($watchdogStartup.Exists -and $watchdogStartup.OwnedAndUnchanged) {
+    Add-Check 'KDE watchdog login startup' 'PASS' 'The silent project-owned watchdog shortcut is unchanged.'
+}
+elseif ($watchdogStartup.Exists) {
+    Add-Check 'KDE watchdog login startup' 'FAIL' 'A watchdog shortcut exists but does not match the project-owned contract.'
+}
+else {
+    Add-Check 'KDE watchdog login startup' 'WARN' 'The optional KDE Connect watchdog is not installed.'
+}
+
+$watchdogProcess = Get-MeshClipWatchdogProcessInfo
+$watchdogStatus = Get-MeshClipWatchdogStatus
+if ($watchdogProcess.Running -and $watchdogStatus.Available -and $watchdogStatus.Fresh -and
+    $watchdogStatus.Status -in @('Starting', 'Healthy', 'Restarted')) {
+    Add-Check 'KDE watchdog runtime' 'PASS' 'Exactly one silent current-session watchdog has a fresh healthy heartbeat.'
+}
+elseif ($watchdogStartup.Exists -and $watchdogStartup.OwnedAndUnchanged) {
+    Add-Check 'KDE watchdog runtime' 'FAIL' 'Watchdog startup is configured but its process or heartbeat is not healthy.'
+}
+else {
+    Add-Check 'KDE watchdog runtime' 'WARN' 'No project-owned watchdog runtime is expected.'
+}
+
 $paths = Get-MeshClipPaths
 try {
     $document = Read-MeshClipTextDocument -Path $paths.KdeConfigPath

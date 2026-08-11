@@ -13,6 +13,8 @@ networks:
 
 - Tailscale is online and configured to run unattended.
 - KDE Connect starts after Windows user login.
+- A silent current-user watchdog restores the trusted KDE Connect indicator if
+  that process exits during the logged-in session.
 - Text copied on either computer becomes available on the other computer.
 - Files transfer in both directions and match SHA-256 checksums.
 - Firewall access is limited to the explicitly approved peer.

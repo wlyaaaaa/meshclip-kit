@@ -21,7 +21,8 @@ Expected reviewed main commit:
 3. Use PowerShell 7. Run install-windows.ps1 -WhatIf, review it, then run the
    same script normally. Use only Tailscale's official browser login; never
    request, print, store, or generate credentials, auth keys, tokens, private
-   keys, or certificates.
+   keys, or certificates. Verify the project-owned silent KDE Connect watchdog
+   login shortcut, one current-session process, and a fresh heartbeat.
 4. Inspect tailscale status --json only locally. If exactly one other online
    Windows peer exists, use it. Otherwise stop for explicit local selection.
    Never print the device list, full address, device ID, or private DNS name.

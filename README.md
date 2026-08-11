@@ -57,7 +57,9 @@ pwsh -File .\scripts\install-windows.ps1
 
 If Tailscale is not authenticated, complete the browser login and rerun the
 installation script. It enables Tailscale Run Unattended and verifies KDE
-Connect login startup.
+Connect login startup. It also installs a silent current-user watchdog that
+checks KDE Connect once per minute and restarts only the trusted indicator when
+the process is absent.
 
 After both computers appear in the same Tailnet, configure **both directions**
 from an elevated PowerShell 7 window:
@@ -92,6 +94,10 @@ Run diagnostics on both computers:
 pwsh -File .\scripts\doctor.ps1 -Peer <OTHER_DEVICE_TAILSCALE_NAME>
 ```
 
+On Windows, `doctor.ps1` separately verifies the watchdog login shortcut,
+exactly one current-session watchdog process, and a fresh heartbeat. The
+watchdog never changes Tailscale, firewall, pairing, clipboard, or file data.
+
 See [docs/WINDOWS.md](docs/WINDOWS.md) for the complete flow and
 [docs/DESKTOP_CODEX_PROMPT.md](docs/DESKTOP_CODEX_PROMPT.md) for the handoff
 prompt.
@@ -120,8 +126,8 @@ and moves it to `.github/workflows/test.yml`.
 ## Removal
 
 By default, removal only deletes MeshClip Kit-created firewall rules, startup
-entries, and peer entries recorded in local state. It does not uninstall
-Tailscale or KDE Connect.
+entries, watchdog runtime/status, and peer entries recorded in local state. It
+does not uninstall Tailscale or KDE Connect.
 
 ```powershell
 pwsh -File .\scripts\uninstall.ps1 -WhatIf

@@ -13,13 +13,18 @@ function Get-MeshClipPaths {
     param()
 
     $stateRoot = Join-Path $env:LOCALAPPDATA 'MeshClipKit'
+    $startupRoot = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'
     [pscustomobject]@{
         StateRoot          = $stateRoot
         StatePath          = Join-Path $stateRoot 'user-state.json'
         BackupsRoot        = Join-Path $stateRoot 'backups'
+        WatchdogStatusPath = Join-Path $stateRoot 'watchdog-status.json'
         KdeRoot            = Join-Path $env:LOCALAPPDATA 'kdeconnect'
         KdeConfigPath      = Join-Path $env:LOCALAPPDATA 'kdeconnect\config'
-        StartupShortcut    = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\KDE Connect.lnk'
+        StartupShortcut    = Join-Path $startupRoot 'KDE Connect.lnk'
+        WatchdogShortcut   = Join-Path $startupRoot 'MeshClip Kit KDE Watchdog.lnk'
+        WatchdogScript     = Join-Path $PSScriptRoot 'watch-kdeconnect.ps1'
+        WatchdogWrapper    = Join-Path $PSScriptRoot 'watch-kdeconnect-hidden.vbs'
     }
 }
 
@@ -743,6 +748,7 @@ function Get-MeshClipState {
             disabledBroadFirewallRules = @()
             pendingTransaction     = $null
             startupShortcutCreated = $false
+            watchdogShortcutCreated = $false
             tailscaleModeChanged   = $false
         }
     }
@@ -760,6 +766,9 @@ function Get-MeshClipState {
     }
     if (-not $state.PSObject.Properties['pendingTransaction']) {
         $state | Add-Member -NotePropertyName pendingTransaction -NotePropertyValue $null
+    }
+    if (-not $state.PSObject.Properties['watchdogShortcutCreated']) {
+        $state | Add-Member -NotePropertyName watchdogShortcutCreated -NotePropertyValue $false
     }
     return $state
 }
@@ -843,6 +852,219 @@ function New-MeshClipStartupShortcut {
     $shortcut.Description = 'KDE Connect login startup verified by MeshClip Kit'
     $shortcut.Save()
     [pscustomobject]@{ Created = $true; Path = $paths.StartupShortcut }
+}
+
+function Test-MeshClipWatchdogCommandLine {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [string] $CommandLine,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedScriptPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return $false
+    }
+    $expected = [IO.Path]::GetFullPath($ExpectedScriptPath)
+    $escaped = [regex]::Escape($expected)
+    $pattern = '(?i)(?:^|\s)-File\s+(?:"' + $escaped + '"|' + $escaped + ')(?=\s|$)'
+    return [regex]::IsMatch($CommandLine, $pattern)
+}
+
+function Get-MeshClipWatchdogStartupInfo {
+    [CmdletBinding()]
+    param()
+
+    $paths = Get-MeshClipPaths
+    if (-not (Test-Path -LiteralPath $paths.WatchdogShortcut -PathType Leaf)) {
+        return [pscustomobject]@{
+            Exists             = $false
+            OwnedAndUnchanged  = $false
+        }
+    }
+    $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($paths.WatchdogShortcut)
+    $expectedArguments = '"' + $paths.WatchdogWrapper + '"'
+    $owned = [bool](
+        (Test-Path -LiteralPath $paths.WatchdogScript -PathType Leaf) -and
+        (Test-Path -LiteralPath $paths.WatchdogWrapper -PathType Leaf) -and
+        [string]::Equals([string]$shortcut.TargetPath, $wscript, [StringComparison]::OrdinalIgnoreCase) -and
+        $shortcut.Arguments -ceq $expectedArguments -and
+        [string]::Equals([string]$shortcut.WorkingDirectory, $PSScriptRoot, [StringComparison]::OrdinalIgnoreCase) -and
+        $shortcut.Description -eq 'MeshClip Kit silent KDE Connect watchdog'
+    )
+    [pscustomobject]@{
+        Exists            = $true
+        OwnedAndUnchanged = $owned
+    }
+}
+
+function New-MeshClipWatchdogStartupShortcut {
+    [CmdletBinding()]
+    param()
+
+    $paths = Get-MeshClipPaths
+    foreach ($required in @($paths.WatchdogScript, $paths.WatchdogWrapper)) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+            throw 'A MeshClip Kit watchdog component is missing.'
+        }
+    }
+    $existing = Get-MeshClipWatchdogStartupInfo
+    if ($existing.Exists) {
+        if (-not $existing.OwnedAndUnchanged) {
+            throw 'A different watchdog startup shortcut already exists. Refusing to overwrite it.'
+        }
+        return [pscustomobject]@{ Created = $false; Path = $paths.WatchdogShortcut }
+    }
+
+    $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+    if (-not (Test-Path -LiteralPath $wscript -PathType Leaf)) {
+        throw 'The Windows Script Host executable was not found.'
+    }
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $paths.WatchdogShortcut)) | Out-Null
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($paths.WatchdogShortcut)
+    $shortcut.TargetPath = $wscript
+    $shortcut.Arguments = '"' + $paths.WatchdogWrapper + '"'
+    $shortcut.WorkingDirectory = $PSScriptRoot
+    $shortcut.Description = 'MeshClip Kit silent KDE Connect watchdog'
+    $shortcut.Save()
+    [pscustomobject]@{ Created = $true; Path = $paths.WatchdogShortcut }
+}
+
+function Get-MeshClipWatchdogProcesses {
+    [CmdletBinding()]
+    param()
+
+    $paths = Get-MeshClipPaths
+    $sessionId = (Get-Process -Id $PID).SessionId
+    @(Get-CimInstance Win32_Process -Filter "Name = 'pwsh.exe'" -ErrorAction SilentlyContinue | Where-Object {
+        $_.SessionId -eq $sessionId -and
+        (Test-MeshClipWatchdogCommandLine -CommandLine ([string]$_.CommandLine) -ExpectedScriptPath $paths.WatchdogScript)
+    })
+}
+
+function Get-MeshClipWatchdogProcessInfo {
+    [CmdletBinding()]
+    param()
+
+    $processes = @(Get-MeshClipWatchdogProcesses)
+    [pscustomobject]@{
+        Running = $processes.Count -eq 1
+        Count   = $processes.Count
+    }
+}
+
+function Start-MeshClipWatchdog {
+    [CmdletBinding()]
+    param()
+
+    $paths = Get-MeshClipPaths
+    if ((Get-MeshClipWatchdogProcessInfo).Count -gt 0) {
+        return [pscustomobject]@{ Started = $false }
+    }
+    $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+    foreach ($required in @($wscript, $paths.WatchdogScript, $paths.WatchdogWrapper)) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+            throw 'A trusted watchdog launch component is missing.'
+        }
+    }
+    Start-Process -FilePath $wscript -ArgumentList @('"' + $paths.WatchdogWrapper + '"')
+    [pscustomobject]@{ Started = $true }
+}
+
+function Stop-MeshClipWatchdogProcesses {
+    [CmdletBinding()]
+    param()
+
+    foreach ($process in @(Get-MeshClipWatchdogProcesses)) {
+        Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction Stop
+    }
+}
+
+function Write-MeshClipWatchdogStatus {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('Starting', 'Healthy', 'Restarted', 'StartFailed', 'StartSkipped', 'Error')]
+        [string] $Status,
+
+        [ValidateRange(0, [int]::MaxValue)]
+        [int] $RestartCount = 0
+    )
+
+    $paths = Get-MeshClipPaths
+    [IO.Directory]::CreateDirectory($paths.StateRoot) | Out-Null
+    $tempPath = Join-Path $paths.StateRoot "watchdog-status.$PID.tmp"
+    $payload = [ordered]@{
+        schemaVersion = 1
+        observedUtc   = [DateTimeOffset]::UtcNow.ToString('O')
+        status        = $Status
+        restartCount  = $RestartCount
+    }
+    try {
+        [IO.File]::WriteAllText(
+            $tempPath,
+            ($payload | ConvertTo-Json -Compress) + [Environment]::NewLine,
+            [Text.UTF8Encoding]::new($false)
+        )
+        [IO.File]::Move($tempPath, $paths.WatchdogStatusPath, $true)
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempPath) {
+            Remove-Item -LiteralPath $tempPath -Force
+        }
+    }
+}
+
+function ConvertTo-MeshClipDateTimeOffset {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        $Value
+    )
+
+    if ($Value -is [DateTimeOffset]) {
+        return $Value
+    }
+    if ($Value -is [DateTime]) {
+        return [DateTimeOffset]$Value
+    }
+    return [DateTimeOffset]::Parse(
+        [string]$Value,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind
+    )
+}
+
+function Get-MeshClipWatchdogStatus {
+    [CmdletBinding()]
+    param()
+
+    $path = (Get-MeshClipPaths).WatchdogStatusPath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return [pscustomobject]@{ Available = $false; Fresh = $false; Status = 'Missing'; RestartCount = 0 }
+    }
+    try {
+        $status = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json -Depth 5
+        if ($status.schemaVersion -ne 1 -or -not $status.observedUtc -or -not $status.status) {
+            throw 'invalid watchdog status'
+        }
+        $observed = ConvertTo-MeshClipDateTimeOffset -Value $status.observedUtc
+        $age = ([DateTimeOffset]::UtcNow - $observed).TotalSeconds
+        [pscustomobject]@{
+            Available    = $true
+            Fresh        = $age -ge -5 -and $age -le 180
+            Status       = [string]$status.status
+            RestartCount = [int]$status.restartCount
+        }
+    }
+    catch {
+        [pscustomobject]@{ Available = $false; Fresh = $false; Status = 'Invalid'; RestartCount = 0 }
+    }
 }
 
 function Get-MeshClipTailscaleAdapterAlias {
@@ -1286,6 +1508,15 @@ Export-ModuleMember -Function @(
     'Save-MeshClipState',
     'Get-MeshClipStartupInfo',
     'New-MeshClipStartupShortcut',
+    'Test-MeshClipWatchdogCommandLine',
+    'Get-MeshClipWatchdogStartupInfo',
+    'New-MeshClipWatchdogStartupShortcut',
+    'Get-MeshClipWatchdogProcessInfo',
+    'Start-MeshClipWatchdog',
+    'Stop-MeshClipWatchdogProcesses',
+    'Write-MeshClipWatchdogStatus',
+    'ConvertTo-MeshClipDateTimeOffset',
+    'Get-MeshClipWatchdogStatus',
     'Get-MeshClipTailscaleAdapterAlias',
     'Get-MeshClipFirewallRuleNames',
     'Test-MeshClipExactStringSet',

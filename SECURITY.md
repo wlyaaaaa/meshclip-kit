@@ -17,6 +17,13 @@ Local state is written under `%LOCALAPPDATA%\MeshClipKit`. KDE Connect identity
 files remain under `%LOCALAPPDATA%\kdeconnect` and are never copied by these
 scripts.
 
+The Windows watchdog is a current-user, login-scoped recovery process. Its
+first launcher is `wscript.exe`, so background startup does not require a
+console window. It checks only whether the trusted KDE Connect indicator is
+running in the same interactive session. Its heartbeat contains only a schema,
+timestamp, bounded status, and restart count; it does not read clipboard data,
+device identity, addresses, Tailscale state, files, or firewall configuration.
+
 ## Pairing and firewall policy
 
 - Pairing must be confirmed by the user on both devices.

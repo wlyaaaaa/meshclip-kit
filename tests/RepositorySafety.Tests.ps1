@@ -64,6 +64,32 @@ Describe 'PowerShell source integrity' {
         $uninstall | Should -Match 'RestoreDisabledBroadKdeFirewallRules'
         $uninstall | Should -Not -Match '\$state\.addedPeers\s*=\s*@\(\)'
     }
+
+    It 'uses a silent, project-owned KDE Connect watchdog lifecycle' {
+        $module = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\MeshClip.Common.psm1') -Raw
+        $install = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\install-windows.ps1') -Raw
+        $doctor = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\doctor.ps1') -Raw
+        $uninstall = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\uninstall.ps1') -Raw
+        $watchdogPath = Join-Path $script:repoRoot 'scripts\watch-kdeconnect.ps1'
+        $wrapperPath = Join-Path $script:repoRoot 'scripts\watch-kdeconnect-hidden.vbs'
+
+        Test-Path -LiteralPath $watchdogPath -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath $wrapperPath -PathType Leaf | Should -BeTrue
+        $module | Should -Match 'New-MeshClipWatchdogStartupShortcut'
+        $install | Should -Match 'Start-MeshClipWatchdog'
+        $doctor | Should -Match 'Get-MeshClipWatchdogStatus'
+        $uninstall | Should -Match 'Stop-MeshClipWatchdogProcesses'
+    }
+
+    It 'keeps the watchdog out of clipboard, network, and firewall configuration' {
+        $watchdog = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\watch-kdeconnect.ps1') -Raw
+
+        foreach ($pattern in @('Set-Clipboard', 'Get-Clipboard', 'tailscale', 'NetFirewall', 'NetAdapter')) {
+            $watchdog | Should -Not -Match ([regex]::Escape($pattern))
+        }
+        $watchdog | Should -Match 'Get-MeshClipKdeExecutable -Kind indicator'
+        $watchdog | Should -Match 'Start-Process -FilePath \$indicator'
+    }
 }
 
 Describe 'Repository safety policy' {

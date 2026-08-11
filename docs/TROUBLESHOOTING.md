@@ -41,6 +41,18 @@
 - Test plain text first; image clipboard formats are unsupported by this MVP.
 - Avoid simultaneous copies while diagnosing ordering issues.
 
+## KDE Connect stops after it was working
+
+- Run `doctor.ps1` and check both watchdog rows.
+- Rerun `install-windows.ps1 -WhatIf`, review the watchdog shortcut/start plan,
+  then run it normally. The installer refuses to overwrite a changed shortcut.
+- A healthy watchdog uses one hidden current-session PowerShell process and a
+  fresh status heartbeat. It does not repair Tailscale, firewall, pairing, or
+  plugin settings.
+- If the indicator repeatedly exits, treat that application failure separately
+  instead of shortening the watchdog interval or creating duplicate startup
+  tasks.
+
 ## File transfer fails
 
 - Verify the destination device is online and paired.

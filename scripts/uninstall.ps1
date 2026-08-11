@@ -24,6 +24,9 @@ Write-Host 'Removal plan:'
 Write-Host "- Remove $(@($state.addedPeers).Count) MeshClip Kit-added KDE custom peer entries."
 Write-Host "- Remove $(@($state.firewallRules).Count) recorded project-owned firewall rules."
 Write-Host "- Remove the login shortcut only if MeshClip Kit created it and it is unchanged."
+if ($state.watchdogShortcutCreated) {
+    Write-Host '- Stop the current-session watchdog and remove its login shortcut only if it is unchanged.'
+}
 if ($RestoreDisabledBroadKdeFirewallRules -and @($state.disabledBroadFirewallRules).Count -gt 0) {
     Write-Host "- Re-enable $(@($state.disabledBroadFirewallRules).Count) broad unmanaged KDE Connect firewall rules previously disabled by MeshClip Kit."
 }
@@ -79,6 +82,24 @@ try {
         }
         else {
             $state.startupShortcutCreated = $false
+        }
+    }
+
+    if ($state.watchdogShortcutCreated) {
+        $watchdogStartup = Get-MeshClipWatchdogStartupInfo
+        if ($watchdogStartup.Exists -and -not $watchdogStartup.OwnedAndUnchanged) {
+            Write-Warning 'Watchdog startup shortcut changed after setup; it and the running watchdog were preserved.'
+        }
+        elseif ($PSCmdlet.ShouldProcess('MeshClip Kit KDE watchdog', 'Stop the exact current-session process and remove project-owned startup/status files')) {
+            Stop-MeshClipWatchdogProcesses
+            if ($watchdogStartup.Exists) {
+                Remove-Item -LiteralPath $paths.WatchdogShortcut -Force
+            }
+            if (Test-Path -LiteralPath $paths.WatchdogStatusPath -PathType Leaf) {
+                Remove-Item -LiteralPath $paths.WatchdogStatusPath -Force
+            }
+            $state.watchdogShortcutCreated = $false
+            Write-Host '[PASS] Removed the project-owned KDE Connect watchdog.'
         }
     }
 

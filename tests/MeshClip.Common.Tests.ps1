@@ -290,3 +290,44 @@ Describe 'Firewall filter contract' {
         Test-MeshClipFirewallFilterContract @script:filter | Should -BeFalse
     }
 }
+
+Describe 'Watchdog process command matching' {
+    BeforeAll {
+        $script:watchdogPath = 'V:\Personal\Projects\meshclip-kit\scripts\watch-kdeconnect.ps1'
+    }
+
+    It 'accepts the exact PowerShell file argument' {
+        $commandLine = '"C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -File "V:\Personal\Projects\meshclip-kit\scripts\watch-kdeconnect.ps1"'
+
+        Test-MeshClipWatchdogCommandLine -CommandLine $commandLine -ExpectedScriptPath $script:watchdogPath |
+            Should -BeTrue
+    }
+
+    It 'rejects a path that only contains the expected script as a prefix' {
+        $commandLine = '"C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -File "V:\Personal\Projects\meshclip-kit\scripts\watch-kdeconnect.ps1.evil"'
+
+        Test-MeshClipWatchdogCommandLine -CommandLine $commandLine -ExpectedScriptPath $script:watchdogPath |
+            Should -BeFalse
+    }
+
+    It 'rejects a command without a file argument' {
+        Test-MeshClipWatchdogCommandLine -CommandLine 'pwsh.exe -NoProfile' -ExpectedScriptPath $script:watchdogPath |
+            Should -BeFalse
+    }
+}
+
+Describe 'Watchdog heartbeat timestamp parsing' {
+    It 'accepts the DateTime value produced by ConvertFrom-Json' {
+        $value = [datetime]'2026-08-11T06:00:00.0000000Z'
+
+        (ConvertTo-MeshClipDateTimeOffset -Value $value).ToUniversalTime().ToString('O') |
+            Should -Be '2026-08-11T06:00:00.0000000+00:00'
+    }
+
+    It 'accepts an ISO 8601 string without using the current culture' {
+        $value = '2026-08-11T06:00:00.0000000+00:00'
+
+        (ConvertTo-MeshClipDateTimeOffset -Value $value).Offset |
+            Should -Be ([TimeSpan]::Zero)
+    }
+}
