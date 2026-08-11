@@ -21,6 +21,8 @@ $lock = Enter-MeshClipOperationLock
 try {
     $state = Get-MeshClipState
     $stateChanged = $false
+    $unattendedEnabledThisRun = $false
+    $startupCreatedThisRun = $false
     $winget = Get-MeshClipTrustedCommand -Name winget
     if (-not $winget) {
         throw 'WinGet is required. Install or repair Windows App Installer first.'
@@ -56,38 +58,48 @@ try {
 
     $tailscale = Get-MeshClipTrustedCommand -Name tailscale
     if ($tailscale) {
+        $status = $null
         try {
             $status = Get-MeshClipTailscaleStatus
+        }
+        catch {
+            throw 'Tailscale status could not be verified safely. Raw command output was suppressed.'
+        }
+        if ($status.BackendState -ne 'Running' -or -not $status.SelfOnline) {
+            Write-Warning 'Tailscale is installed but not online. Complete the official browser login, then rerun this script.'
+        }
+        elseif (-not $SkipTailscaleUnattended) {
             $prefs = Get-MeshClipTailscalePreferences
-            if ($status.BackendState -ne 'Running' -or -not $status.SelfOnline) {
-                Write-Warning 'Tailscale is installed but not online. Complete the official browser login, then rerun this script.'
+            if (-not $prefs) {
+                throw 'Tailscale Run Unattended could not be verified; setup stopped without changing the preference.'
             }
-            elseif (-not $SkipTailscaleUnattended -and $prefs -and -not $prefs.ForceDaemon) {
+            if (-not $prefs.ForceDaemon) {
+                if (-not (Test-MeshClipAdministrator)) {
+                    throw 'Open PowerShell 7 as Administrator to enable Tailscale Run Unattended, then rerun setup.'
+                }
                 if ($PSCmdlet.ShouldProcess('Tailscale', 'Enable Run Unattended without resetting other preferences')) {
                     Invoke-MeshClipExternal -FilePath $tailscale -ArgumentList @('set', '--unattended=true') | Out-Null
                     $state.tailscaleModeChanged = $true
                     $stateChanged = $true
+                    $unattendedEnabledThisRun = $true
                     Write-Host '[PASS] Enabled Tailscale Run Unattended.'
                 }
             }
-            elseif ($prefs -and $prefs.ForceDaemon) {
+            else {
                 Write-Host '[PASS] Tailscale Run Unattended is already enabled.'
             }
+        }
 
-            if ($status.BackendState -eq 'Running') {
-                try {
-                    $shield = Invoke-MeshClipExternal -FilePath $tailscale -ArgumentList @('get', 'shields-up')
-                    if (($shield.Output -join '').Trim() -eq 'true') {
-                        Write-Warning 'Tailscale shields-up is enabled. Incoming KDE Connect traffic will be blocked; change this manually if intentional.'
-                    }
-                }
-                catch {
-                    Write-Warning 'Could not verify the Tailscale shields-up setting.'
+        if ($status.BackendState -eq 'Running') {
+            try {
+                $shield = Invoke-MeshClipExternal -FilePath $tailscale -ArgumentList @('get', 'shields-up')
+                if (($shield.Output -join '').Trim() -eq 'true') {
+                    Write-Warning 'Tailscale shields-up is enabled. Incoming KDE Connect traffic will be blocked; change this manually if intentional.'
                 }
             }
-        }
-        catch {
-            Write-Warning 'Tailscale status could not be verified. Raw command output was suppressed.'
+            catch {
+                Write-Warning 'Could not verify the Tailscale shields-up setting.'
+            }
         }
     }
 
@@ -103,6 +115,7 @@ try {
                 if ($result.Created) {
                     $state.startupShortcutCreated = $true
                     $stateChanged = $true
+                    $startupCreatedThisRun = $true
                 }
                 Write-Host '[PASS] KDE Connect login startup is configured.'
             }
@@ -120,7 +133,28 @@ try {
     }
 
     if ($stateChanged -and -not $WhatIfPreference) {
-        Save-MeshClipState -State $state
+        try {
+            Save-MeshClipState -State $state
+        }
+        catch {
+            $rollbackErrors = [Collections.Generic.List[string]]::new()
+            if ($startupCreatedThisRun) {
+                try {
+                    $startup = Get-MeshClipStartupInfo
+                    if (-not $startup.OwnedAndUnchanged) { throw 'shortcut changed' }
+                    Remove-Item -LiteralPath (Get-MeshClipPaths).StartupShortcut -Force
+                }
+                catch { $rollbackErrors.Add('startup shortcut') }
+            }
+            if ($unattendedEnabledThisRun) {
+                try { Invoke-MeshClipExternal -FilePath $tailscale -ArgumentList @('set', '--unattended=false') | Out-Null }
+                catch { $rollbackErrors.Add('Tailscale unattended mode') }
+            }
+            if ($rollbackErrors.Count -gt 0) {
+                throw "Setup state could not be saved and rollback was incomplete for: $($rollbackErrors -join ', ')."
+            }
+            throw 'Setup state could not be saved; changes made by this run were rolled back.'
+        }
     }
 
     Write-Host ''

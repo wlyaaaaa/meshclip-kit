@@ -3,7 +3,8 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
     [switch] $Apply,
-    [switch] $RestoreTailscaleMode
+    [switch] $RestoreTailscaleMode,
+    [switch] $RestoreDisabledBroadKdeFirewallRules
 )
 
 Set-StrictMode -Version Latest
@@ -15,11 +16,17 @@ if (-not (Test-Path -LiteralPath $paths.StatePath -PathType Leaf)) {
     throw 'No valid MeshClip Kit state file exists. Refusing to guess which resources to remove.'
 }
 $state = Get-MeshClipState
+if ($state.pendingTransaction) {
+    throw 'An interrupted configuration transaction is recorded. Run doctor.ps1 and review the machine before uninstalling.'
+}
 
 Write-Host 'Removal plan:'
 Write-Host "- Remove $(@($state.addedPeers).Count) MeshClip Kit-added KDE custom peer entries."
 Write-Host "- Remove $(@($state.firewallRules).Count) recorded project-owned firewall rules."
 Write-Host "- Remove the login shortcut only if MeshClip Kit created it and it is unchanged."
+if ($RestoreDisabledBroadKdeFirewallRules -and @($state.disabledBroadFirewallRules).Count -gt 0) {
+    Write-Host "- Re-enable $(@($state.disabledBroadFirewallRules).Count) broad unmanaged KDE Connect firewall rules previously disabled by MeshClip Kit."
+}
 if ($RestoreTailscaleMode -and $state.tailscaleModeChanged) {
     Write-Host '- Restore Tailscale unattended mode to disabled.'
 }
@@ -30,22 +37,27 @@ if (-not $Apply) {
     Write-Host 'Preview only. Rerun with -Apply after reviewing this plan; -WhatIf remains supported.'
     return
 }
-if (@($state.firewallRules).Count -gt 0 -and -not (Test-MeshClipAdministrator)) {
+if ((@($state.firewallRules).Count -gt 0 -or
+    ($RestoreDisabledBroadKdeFirewallRules -and @($state.disabledBroadFirewallRules).Count -gt 0)) -and
+    -not (Test-MeshClipAdministrator)) {
     throw 'Open PowerShell 7 as Administrator before applying removal.'
 }
 
 $lock = Enter-MeshClipOperationLock
 try {
+    $remainingPeers = [Collections.Generic.List[string]]::new()
+    foreach ($address in @($state.addedPeers)) { $remainingPeers.Add([string]$address) }
     foreach ($address in @($state.addedPeers)) {
         $redacted = ConvertTo-MeshClipRedactedAddress -Address $address
         if ($PSCmdlet.ShouldProcess('KDE Connect customDevices', "Remove project-added peer $redacted")) {
             $result = Write-MeshClipKdeConfigChange -Action Remove -Address $address
+            $remainingPeers.Remove([string]$address) | Out-Null
             if ($result.Changed) {
                 Write-Host "[PASS] Removed one project-added peer at $redacted."
             }
         }
     }
-    $state.addedPeers = @()
+    $state.addedPeers = @($remainingPeers)
 
     if (@($state.firewallRules).Count -gt 0 -and $PSCmdlet.ShouldProcess('Windows Firewall', 'Remove recorded MeshClip Kit rules')) {
         Remove-MeshClipFirewallRules -Names @($state.firewallRules)
@@ -55,7 +67,7 @@ try {
 
     if ($state.startupShortcutCreated) {
         $startup = Get-MeshClipStartupInfo
-        if ($startup.Exists -and $startup.Matches) {
+        if ($startup.Exists -and $startup.OwnedAndUnchanged) {
             if ($PSCmdlet.ShouldProcess($paths.StartupShortcut, 'Remove MeshClip Kit-created startup shortcut')) {
                 Remove-Item -LiteralPath $paths.StartupShortcut -Force
                 $state.startupShortcutCreated = $false
@@ -68,6 +80,14 @@ try {
         else {
             $state.startupShortcutCreated = $false
         }
+    }
+
+    if ($RestoreDisabledBroadKdeFirewallRules -and
+        @($state.disabledBroadFirewallRules).Count -gt 0 -and
+        $PSCmdlet.ShouldProcess('Windows Firewall', 'Re-enable recorded unmanaged KDE Connect rules')) {
+        Enable-MeshClipDisabledUnmanagedKdeFirewallRules -Names @($state.disabledBroadFirewallRules)
+        $state.disabledBroadFirewallRules = @()
+        Write-Host '[PASS] Restored the recorded unmanaged firewall rules to their prior enabled state.'
     }
 
     if ($RestoreTailscaleMode -and $state.tailscaleModeChanged) {

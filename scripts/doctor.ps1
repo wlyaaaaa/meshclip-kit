@@ -78,15 +78,10 @@ else {
     }
 }
 
-if ($Peer -and $status) {
+if ($status) {
     try {
-        $selected = Resolve-MeshClipPeer -Status $status -Peer $Peer
-        if ($selected.Online) {
-            Add-Check 'Approved peer state' 'PASS' 'One exact peer is online; identity is redacted.'
-        }
-        else {
-            Add-Check 'Approved peer state' 'WARN' 'The exact peer exists but is offline.'
-        }
+        $selected = Resolve-MeshClipApprovedWindowsPeer -Status $status -Peer $Peer
+        Add-Check 'Approved peer state' 'PASS' 'Exactly one approved Windows peer is online; identity is redacted.'
 
         try {
             Invoke-MeshClipExternal -FilePath $tailscale -ArgumentList @(
@@ -99,11 +94,8 @@ if ($Peer -and $status) {
         }
     }
     catch {
-        Add-Check 'Approved peer state' 'FAIL' 'No unique exact peer match was found.'
+        Add-Check 'Approved peer state' 'FAIL' 'Exactly one online Windows peer could not be approved safely.'
     }
-}
-elseif (-not $Peer) {
-    Add-Check 'Approved peer state' 'WARN' 'Pass -Peer to validate the intended opposite computer.'
 }
 
 $indicator = Get-MeshClipKdeExecutable -Kind indicator
@@ -165,8 +157,8 @@ if ($selected -and $daemon) {
         $protocols = @('TCP', 'UDP')
         $allCompliant = $true
         for ($i = 0; $i -lt $names.Count; $i++) {
-            $rule = Get-NetFirewallRule -DisplayName $names[$i] -ErrorAction SilentlyContinue
-            if (-not $rule -or -not (Test-MeshClipFirewallRuleCompliant -Rule $rule -Protocol $protocols[$i] -Address $selected.Address -Program $daemon -InterfaceAlias $adapter)) {
+            $rules = @(Get-NetFirewallRule -DisplayName $names[$i] -ErrorAction SilentlyContinue)
+            if ($rules.Count -ne 1 -or -not (Test-MeshClipFirewallRuleCompliant -Rule $rules[0] -Protocol $protocols[$i] -Address $selected.Address -Program $daemon -InterfaceAlias $adapter)) {
                 $allCompliant = $false
             }
         }
@@ -182,12 +174,17 @@ if ($selected -and $daemon) {
     }
 }
 
-$firewallAudit = Get-MeshClipKdeFirewallAudit
+$firewallAudit = if ($selected) {
+    Get-MeshClipKdeFirewallAudit -Address $selected.Address
+}
+else {
+    Get-MeshClipKdeFirewallAudit
+}
 if ($firewallAudit.Status -eq 'Available' -and $firewallAudit.BroadInboundAllow -gt 0) {
-    Add-Check 'Unmanaged KDE firewall' 'WARN' 'One or more broad non-project inbound allow rules target KDE Connect; review them manually.'
+    Add-Check 'Unmanaged KDE firewall' 'FAIL' 'Broad non-project inbound allow rules target KDE Connect; harden them before acceptance.'
 }
 elseif ($firewallAudit.Status -eq 'Available' -and $firewallAudit.UnmanagedInboundAllow -gt 0) {
-    Add-Check 'Unmanaged KDE firewall' 'WARN' 'Non-project inbound allow rules target KDE Connect; their scope was not changed.'
+    Add-Check 'Unmanaged KDE firewall' 'FAIL' 'Non-project inbound allow rules target KDE Connect; acceptance requires only project-owned exact-peer rules.'
 }
 elseif ($firewallAudit.Status -eq 'Available') {
     Add-Check 'Unmanaged KDE firewall' 'PASS' 'No non-project inbound allow rule targets the KDE Connect daemon.'
@@ -196,9 +193,22 @@ else {
     Add-Check 'Unmanaged KDE firewall' 'UNKNOWN' 'Existing KDE Connect firewall rules could not be audited.'
 }
 
+try {
+    $localState = Get-MeshClipState
+    if ($localState.pendingTransaction) {
+        Add-Check 'Transaction state' 'FAIL' 'An interrupted configuration transaction requires review before more changes.'
+    }
+    else {
+        Add-Check 'Transaction state' 'PASS' 'No interrupted project transaction is recorded.'
+    }
+}
+catch {
+    Add-Check 'Transaction state' 'FAIL' 'Local transaction state could not be read safely.'
+}
+
 $deviceSummary = Get-MeshClipKdeDeviceSummary
 if ($deviceSummary.Status -eq 'Available' -and $deviceSummary.Available -gt 0) {
-    Add-Check 'KDE peer availability' 'PASS' 'At least one KDE Connect device is available; identity is redacted.'
+    Add-Check 'KDE peer availability' 'WARN' 'A KDE Connect device is visible. Manually confirm the same pairing identity on both computers.'
 }
 elseif ($deviceSummary.Status -eq 'Available') {
     Add-Check 'KDE peer availability' 'WARN' 'No KDE Connect device is currently available or paired.'

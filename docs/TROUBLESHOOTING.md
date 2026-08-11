@@ -14,6 +14,26 @@
 - Confirm the exact-peer TCP and UDP 1714-1764 rules exist.
 - Restart KDE Connect or run `kdeconnect-cli --refresh`.
 
+## Configuration stops on broad KDE firewall rules
+
+- Treat this as a security block, not a warning to ignore.
+- Run `configure-peer.ps1` with `-DisableBroadKdeFirewallRules -WhatIf` and
+  verify that the plan only disables non-project inbound rules targeting the
+  trusted KDE Connect daemon.
+- Rerun without `-WhatIf` only after reviewing the plan. Disabled rule
+  identities remain in ignored local state and are not printed in reports.
+- To restore them during rollback, first preview
+  `uninstall.ps1 -RestoreDisabledBroadKdeFirewallRules`, then add `-Apply`.
+
+## An interrupted transaction is reported
+
+- Stop making configuration changes and run `doctor.ps1` locally.
+- Preserve `%LOCALAPPDATA%\MeshClipKit` and KDE config backups while reviewing
+  the last operation; do not delete unrelated firewall rules or KDE identity
+  files.
+- If automatic rollback reported an incomplete component, repair only that
+  named component before rerunning configuration.
+
 ## Clipboard does not update
 
 - Confirm both users are logged in and KDE Connect is running.

@@ -150,6 +150,7 @@ Describe 'Exact Tailnet peer resolution' {
                     StableId = 'stable-a'
                     HostName = 'desktop-a'
                     DnsName = 'desktop-a.meshclip.example.invalid.'
+                    OS = 'windows'
                     Online = $true
                     TailscaleIPs = @('192.0.2.20', '2001:db8::20')
                 },
@@ -157,8 +158,17 @@ Describe 'Exact Tailnet peer resolution' {
                     StableId = 'stable-b'
                     HostName = 'desktop-b'
                     DnsName = 'desktop-b.meshclip.example.invalid.'
+                    OS = 'windows'
                     Online = $false
                     TailscaleIPs = @('192.0.2.21')
+                },
+                [pscustomobject]@{
+                    StableId = 'stable-c'
+                    HostName = 'linux-c'
+                    DnsName = 'linux-c.meshclip.example.invalid.'
+                    OS = 'linux'
+                    Online = $true
+                    TailscaleIPs = @('192.0.2.22')
                 }
             )
         }
@@ -186,6 +196,36 @@ Describe 'Exact Tailnet peer resolution' {
         { Resolve-MeshClipPeer -Status $script:status -Peer "desktop-a`nother" } |
             Should -Throw '*must not contain*'
     }
+
+    It 'automatically selects the only online Windows peer' {
+        $peer = Resolve-MeshClipApprovedWindowsPeer -Status $script:status
+
+        $peer.StableId | Should -Be 'stable-a'
+    }
+
+    It 'rejects an explicitly selected offline Windows peer' {
+        { Resolve-MeshClipApprovedWindowsPeer -Status $script:status -Peer 'desktop-b' } |
+            Should -Throw '*online Windows peer*'
+    }
+
+    It 'rejects an explicitly selected non-Windows peer' {
+        { Resolve-MeshClipApprovedWindowsPeer -Status $script:status -Peer 'linux-c' } |
+            Should -Throw '*online Windows peer*'
+    }
+
+    It 'rejects automatic selection when more than one online Windows peer exists' {
+        $script:status.Peers += [pscustomobject]@{
+            StableId = 'stable-d'
+            HostName = 'desktop-d'
+            DnsName = 'desktop-d.meshclip.example.invalid.'
+            OS = 'windows'
+            Online = $true
+            TailscaleIPs = @('192.0.2.23')
+        }
+
+        { Resolve-MeshClipApprovedWindowsPeer -Status $script:status } |
+            Should -Throw '*exactly one online Windows peer*'
+    }
 }
 
 Describe 'Firewall rule naming' {
@@ -198,5 +238,55 @@ Describe 'Firewall rule naming' {
         ($first -join ',') | Should -Not -Match '192\.0\.2\.22'
         $first[0] | Should -Match '^MeshClipKit-[0-9A-F]{12}-TCP$'
         $first[1] | Should -Match '^MeshClipKit-[0-9A-F]{12}-UDP$'
+    }
+}
+
+Describe 'Exact firewall filter equality' {
+    It 'accepts only the exact expected scalar set' {
+        Test-MeshClipExactStringSet -Actual @('1714-1764') -Expected @('1714-1764') |
+            Should -BeTrue
+    }
+
+    It 'rejects a filter that contains the expected value plus a broad value' {
+        Test-MeshClipExactStringSet -Actual @('1714-1764', 'Any') -Expected @('1714-1764') |
+            Should -BeFalse
+    }
+
+    It 'rejects a filter whose only value is broad' {
+        Test-MeshClipExactStringSet -Actual @('Any') -Expected @('1714-1764') |
+            Should -BeFalse
+    }
+}
+
+Describe 'Firewall filter contract' {
+    BeforeEach {
+        $script:filter = @{
+            ActualProtocol = 'TCP'
+            ExpectedProtocol = 'TCP'
+            ActualLocalPorts = @('1714-1764')
+            ExpectedLocalPorts = @('1714-1764')
+            ActualRemoteAddresses = @('192.0.2.24')
+            ExpectedRemoteAddresses = @('192.0.2.24')
+            ActualPrograms = @('C:\\Program Files\\KDE Connect\\bin\\kdeconnectd.exe')
+            ExpectedPrograms = @('C:\\Program Files\\KDE Connect\\bin\\kdeconnectd.exe')
+            ActualInterfaceAliases = @('Tailscale')
+            ExpectedInterfaceAliases = @('Tailscale')
+        }
+    }
+
+    It 'accepts an exact protocol, port, peer, program, and interface contract' {
+        Test-MeshClipFirewallFilterContract @script:filter | Should -BeTrue
+    }
+
+    It 'rejects an additional remote address' {
+        $script:filter.ActualRemoteAddresses = @('192.0.2.24', 'Any')
+
+        Test-MeshClipFirewallFilterContract @script:filter | Should -BeFalse
+    }
+
+    It 'rejects an additional interface alias' {
+        $script:filter.ActualInterfaceAliases = @('Tailscale', 'Any')
+
+        Test-MeshClipFirewallFilterContract @script:filter | Should -BeFalse
     }
 }

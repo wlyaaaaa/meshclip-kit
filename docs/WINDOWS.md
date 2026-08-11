@@ -2,7 +2,8 @@
 
 ## 1. Install
 
-Open PowerShell 7 as the normal user:
+Open PowerShell 7. If Tailscale Run Unattended is not already enabled, use an
+elevated PowerShell 7 window so the preference change can be verified:
 
 ```powershell
 pwsh -File .\scripts\install-windows.ps1
@@ -33,7 +34,22 @@ pwsh -File .\scripts\configure-peer.ps1 -Peer <LAPTOP_NAME>
 ```
 
 The scripts add the peer to KDE Connect's `customDevices` setting and create
-exact-peer inbound rules for TCP/UDP 1714-1764. They do not accept pairing.
+exact-peer inbound rules for TCP/UDP 1714-1764. They accept only an online
+Windows peer. When `-Peer` is omitted, exactly one other online Windows peer
+must exist. They do not accept pairing.
+
+If configuration reports broad non-project KDE Connect firewall rules, stop
+and review the hardening preview:
+
+```powershell
+pwsh -File .\scripts\configure-peer.ps1 -Peer <OTHER_DEVICE_NAME> -DisableBroadKdeFirewallRules -WhatIf
+```
+
+Only after that preview is understood, rerun it without `-WhatIf`. The script
+disables only the conflicting KDE Connect inbound rules, records them for
+optional rollback, and still creates only the two exact-peer project rules.
+Any failure rolls back changes made by that run or reports the incomplete
+rollback as a blocking error.
 
 ## 3. Pair and harden
 
@@ -53,11 +69,16 @@ Diagnostics deliberately omit complete peer addresses, device IDs, and private
 configuration values. Do not paste raw `tailscale status --json` or KDE identity
 files into a public issue or chat.
 
+`KDE peer availability` remains `WARN` until the user has manually confirmed
+the same pairing request on both computers. Device discovery alone is not
+pairing evidence.
+
 ## 5. Acceptance
 
 - Copy unique non-secret text in both directions.
 - Repeat 100 times with generated test strings.
 - Send small, 100 MB, and 1 GB generated test files.
 - Compare SHA-256 on both sides with `Get-FileHash`.
-- Reboot each device and verify the documented startup states.
+- Obtain explicit user approval before rebooting either device, then verify
+  Tailscale pre-login availability and KDE Connect recovery after user login.
 - Lock the logged-in session and record observed behavior.

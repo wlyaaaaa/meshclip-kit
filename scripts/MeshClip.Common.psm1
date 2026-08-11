@@ -89,11 +89,6 @@ function Get-MeshClipTrustedCommand {
         }
     }
 
-    $command = Get-Command -Name $Name -CommandType Application -ErrorAction SilentlyContinue
-    if ($command -and $command.Source -and -not $command.Source.StartsWith((Get-Location).Path, [StringComparison]::OrdinalIgnoreCase)) {
-        return $command.Source
-    }
-
     return $null
 }
 
@@ -137,33 +132,6 @@ function Get-MeshClipKdeInstallRoot {
     $candidates.Add((Join-Path $env:ProgramFiles 'KDE Connect'))
     if (${env:ProgramFiles(x86)}) {
         $candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'KDE Connect'))
-    }
-
-    $uninstallRoots = @(
-        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
-    )
-    foreach ($entry in $uninstallRoots | ForEach-Object { Get-ItemProperty $_ -ErrorAction SilentlyContinue }) {
-        $displayName = $entry.PSObject.Properties['DisplayName']
-        $displayIcon = $entry.PSObject.Properties['DisplayIcon']
-        if ($displayName -and $displayName.Value -eq 'KDE Connect' -and $displayIcon -and $displayIcon.Value) {
-            $iconText = [Environment]::ExpandEnvironmentVariables([string]$displayIcon.Value)
-            $iconPath = if ($iconText.StartsWith('"')) {
-                [regex]::Match($iconText, '^"([^\"]+)"').Groups[1].Value
-            }
-            else {
-                ($iconText -split ',', 2)[0].Trim()
-            }
-            if (-not $iconPath) {
-                continue
-            }
-            $root = Split-Path -Parent $iconPath
-            if ((Split-Path -Leaf $root) -eq 'bin') {
-                $root = Split-Path -Parent $root
-            }
-            $candidates.Add($root)
-        }
     }
 
     foreach ($candidate in $candidates | Select-Object -Unique) {
@@ -226,6 +194,7 @@ function Get-MeshClipTailscaleStatus {
                 StableId     = $property.Name
                 HostName     = [string]$peer.HostName
                 DnsName      = [string]$peer.DNSName
+                OS           = [string]$peer.OS
                 Online       = [bool]$peer.Online
                 Active       = [bool]$peer.Active
                 TailscaleIPs = @($peer.TailscaleIPs | ForEach-Object { [string]$_ })
@@ -310,9 +279,38 @@ function Resolve-MeshClipPeer {
         StableId = $matchedPeers[0].StableId
         HostName = $matchedPeers[0].HostName
         DnsName  = $matchedPeers[0].DnsName
+        OS       = $matchedPeers[0].OS
         Online   = $matchedPeers[0].Online
         Address  = $ipv4[0]
     }
+}
+
+function Resolve-MeshClipApprovedWindowsPeer {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [pscustomobject] $Status,
+
+        [string] $Peer
+    )
+
+    $onlineWindowsPeers = @($Status.Peers | Where-Object {
+        [bool]$_.Online -and ([string]$_.OS).Equals('windows', [StringComparison]::OrdinalIgnoreCase)
+    })
+
+    if (-not $Peer) {
+        if ($onlineWindowsPeers.Count -ne 1) {
+            throw 'Automatic selection requires exactly one online Windows peer in the current Tailnet.'
+        }
+        $candidate = $onlineWindowsPeers[0]
+        $peer = if ($candidate.HostName) { [string]$candidate.HostName } else { [string]$candidate.DnsName }
+    }
+
+    $selected = Resolve-MeshClipPeer -Status $Status -Peer $Peer
+    if (-not $selected.Online -or -not ([string]$selected.OS).Equals('windows', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The selected device is not an online Windows peer.'
+    }
+    return $selected
 }
 
 function ConvertTo-MeshClipRedactedAddress {
@@ -633,7 +631,14 @@ function Write-MeshClipKdeConfigChange {
         }
     }
     if (-not $result.Changed) {
-        return [pscustomobject]@{ Changed = $false; BackupPath = $null; Devices = $result.Devices }
+        return [pscustomobject]@{
+            Changed        = $false
+            BackupPath     = $null
+            Devices        = $result.Devices
+            OriginalExists = $document.Exists
+            OriginalHash   = $document.Hash
+            ResultHash     = $document.Hash
+        }
     }
 
     $configDirectory = Split-Path -Parent $paths.KdeConfigPath
@@ -674,7 +679,55 @@ function Write-MeshClipKdeConfigChange {
         }
     }
 
-    [pscustomobject]@{ Changed = $true; BackupPath = $backupPath; Devices = $result.Devices }
+    [pscustomobject]@{
+        Changed        = $true
+        BackupPath     = $backupPath
+        Devices        = $result.Devices
+        OriginalExists = $document.Exists
+        OriginalHash   = $document.Hash
+        ResultHash     = Get-MeshClipFileHashSafe -Path $paths.KdeConfigPath
+    }
+}
+
+function Restore-MeshClipKdeConfigChange {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [pscustomobject] $Change
+    )
+
+    if (-not $Change.Changed) {
+        return
+    }
+
+    $paths = Get-MeshClipPaths
+    $currentHash = Get-MeshClipFileHashSafe -Path $paths.KdeConfigPath
+    if ($currentHash -ne $Change.ResultHash) {
+        throw 'KDE Connect config changed after the project write; automatic rollback was refused.'
+    }
+
+    if ($Change.OriginalExists) {
+        if (-not $Change.BackupPath -or -not (Test-Path -LiteralPath $Change.BackupPath -PathType Leaf)) {
+            throw 'The KDE Connect config preimage is unavailable; automatic rollback was refused.'
+        }
+        $configDirectory = Split-Path -Parent $paths.KdeConfigPath
+        $tempPath = Join-Path $configDirectory "config.meshclip.rollback.$PID.tmp"
+        try {
+            [IO.File]::Copy($Change.BackupPath, $tempPath, $false)
+            if ((Get-MeshClipFileHashSafe -Path $tempPath) -ne $Change.OriginalHash) {
+                throw 'The KDE Connect config preimage hash did not match.'
+            }
+            [IO.File]::Move($tempPath, $paths.KdeConfigPath, $true)
+        }
+        finally {
+            if (Test-Path -LiteralPath $tempPath) {
+                Remove-Item -LiteralPath $tempPath -Force
+            }
+        }
+    }
+    else {
+        Remove-Item -LiteralPath $paths.KdeConfigPath -Force
+    }
 }
 
 function Get-MeshClipState {
@@ -687,6 +740,8 @@ function Get-MeshClipState {
             schemaVersion          = $script:StateSchemaVersion
             addedPeers             = @()
             firewallRules          = @()
+            disabledBroadFirewallRules = @()
+            pendingTransaction     = $null
             startupShortcutCreated = $false
             tailscaleModeChanged   = $false
         }
@@ -699,6 +754,12 @@ function Get-MeshClipState {
     }
     if ($state.schemaVersion -ne $script:StateSchemaVersion) {
         throw 'MeshClip Kit local state schema is unsupported.'
+    }
+    if (-not $state.PSObject.Properties['disabledBroadFirewallRules']) {
+        $state | Add-Member -NotePropertyName disabledBroadFirewallRules -NotePropertyValue @()
+    }
+    if (-not $state.PSObject.Properties['pendingTransaction']) {
+        $state | Add-Member -NotePropertyName pendingTransaction -NotePropertyValue $null
     }
     return $state
 }
@@ -732,15 +793,28 @@ function Get-MeshClipStartupInfo {
 
     $paths = Get-MeshClipPaths
     if (-not (Test-Path -LiteralPath $paths.StartupShortcut -PathType Leaf)) {
-        return [pscustomobject]@{ Exists = $false; TargetPath = $null; Matches = $false }
+        return [pscustomobject]@{
+            Exists            = $false
+            TargetPath        = $null
+            Matches           = $false
+            OwnedAndUnchanged = $false
+        }
     }
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($paths.StartupShortcut)
     $expected = Get-MeshClipKdeExecutable -Kind indicator
+    $ownedDescription = 'KDE Connect login startup verified by MeshClip Kit'
+    $trustedTarget = [bool]($expected -and $shortcut.TargetPath -eq $expected)
     [pscustomobject]@{
-        Exists     = $true
-        TargetPath = $shortcut.TargetPath
-        Matches    = [bool]($expected -and $shortcut.TargetPath -eq $expected)
+        Exists            = $true
+        TargetPath        = $shortcut.TargetPath
+        Matches           = $trustedTarget
+        OwnedAndUnchanged = [bool](
+            $trustedTarget -and
+            [string]::IsNullOrEmpty($shortcut.Arguments) -and
+            $shortcut.WorkingDirectory -eq $env:USERPROFILE -and
+            $shortcut.Description -eq $ownedDescription
+        )
     }
 }
 
@@ -796,6 +870,53 @@ function Get-MeshClipFirewallRuleNames {
     @("MeshClipKit-$hash-TCP", "MeshClipKit-$hash-UDP")
 }
 
+function Test-MeshClipExactStringSet {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()]
+        [string[]] $Actual = @(),
+
+        [AllowEmptyCollection()]
+        [string[]] $Expected = @()
+    )
+
+    $actualValues = @($Actual | ForEach-Object { [string]$_ })
+    $expectedValues = @($Expected | ForEach-Object { [string]$_ })
+    if ($actualValues.Count -ne $expectedValues.Count) {
+        return $false
+    }
+
+    $actualSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $expectedSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($value in $actualValues) { $actualSet.Add($value) | Out-Null }
+    foreach ($value in $expectedValues) { $expectedSet.Add($value) | Out-Null }
+    return $actualSet.Count -eq $actualValues.Count -and
+        $expectedSet.Count -eq $expectedValues.Count -and
+        $actualSet.SetEquals($expectedSet)
+}
+
+function Test-MeshClipFirewallFilterContract {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $ActualProtocol,
+        [Parameter(Mandatory)] [string] $ExpectedProtocol,
+        [Parameter(Mandatory)] [string[]] $ActualLocalPorts,
+        [Parameter(Mandatory)] [string[]] $ExpectedLocalPorts,
+        [Parameter(Mandatory)] [string[]] $ActualRemoteAddresses,
+        [Parameter(Mandatory)] [string[]] $ExpectedRemoteAddresses,
+        [Parameter(Mandatory)] [string[]] $ActualPrograms,
+        [Parameter(Mandatory)] [string[]] $ExpectedPrograms,
+        [Parameter(Mandatory)] [string[]] $ActualInterfaceAliases,
+        [Parameter(Mandatory)] [string[]] $ExpectedInterfaceAliases
+    )
+
+    return $ActualProtocol -eq $ExpectedProtocol -and
+        (Test-MeshClipExactStringSet -Actual $ActualLocalPorts -Expected $ExpectedLocalPorts) -and
+        (Test-MeshClipExactStringSet -Actual $ActualRemoteAddresses -Expected $ExpectedRemoteAddresses) -and
+        (Test-MeshClipExactStringSet -Actual $ActualPrograms -Expected $ExpectedPrograms) -and
+        (Test-MeshClipExactStringSet -Actual $ActualInterfaceAliases -Expected $ExpectedInterfaceAliases)
+}
+
 function Test-MeshClipFirewallRuleCompliant {
     [CmdletBinding()]
     param(
@@ -806,20 +927,32 @@ function Test-MeshClipFirewallRuleCompliant {
         [Parameter(Mandatory)] [string] $InterfaceAlias
     )
 
-    $port = $Rule | Get-NetFirewallPortFilter
-    $remote = $Rule | Get-NetFirewallAddressFilter
-    $application = $Rule | Get-NetFirewallApplicationFilter
-    $interface = $Rule | Get-NetFirewallInterfaceFilter
+    $ports = @($Rule | Get-NetFirewallPortFilter)
+    $remotes = @($Rule | Get-NetFirewallAddressFilter)
+    $applications = @($Rule | Get-NetFirewallApplicationFilter)
+    $interfaces = @($Rule | Get-NetFirewallInterfaceFilter)
+    if ($ports.Count -ne 1 -or $remotes.Count -ne 1 -or
+        $applications.Count -ne 1 -or $interfaces.Count -ne 1) {
+        return $false
+    }
+
     return (
         $Rule.Group -eq $script:FirewallGroup -and
         $Rule.Direction.ToString() -eq 'Inbound' -and
         $Rule.Action.ToString() -eq 'Allow' -and
         $Rule.Enabled.ToString() -eq 'True' -and
-        $port.Protocol.ToString() -eq $Protocol -and
-        $script:FirewallPortRange -in @($port.LocalPort) -and
-        $Address -in @($remote.RemoteAddress) -and
-        $application.Program -eq $Program -and
-        $InterfaceAlias -in @($interface.InterfaceAlias)
+        $Rule.EdgeTraversalPolicy.ToString() -eq 'Block' -and
+        (Test-MeshClipFirewallFilterContract `
+            -ActualProtocol $ports[0].Protocol.ToString() `
+            -ExpectedProtocol $Protocol `
+            -ActualLocalPorts @($ports[0].LocalPort) `
+            -ExpectedLocalPorts @($script:FirewallPortRange) `
+            -ActualRemoteAddresses @($remotes[0].RemoteAddress) `
+            -ExpectedRemoteAddresses @($Address) `
+            -ActualPrograms @($applications[0].Program) `
+            -ExpectedPrograms @($Program) `
+            -ActualInterfaceAliases @($interfaces[0].InterfaceAlias) `
+            -ExpectedInterfaceAliases @($InterfaceAlias))
     )
 }
 
@@ -844,9 +977,9 @@ function New-MeshClipFirewallRules {
 
     try {
         for ($i = 0; $i -lt $names.Count; $i++) {
-            $existing = Get-NetFirewallRule -DisplayName $names[$i] -ErrorAction SilentlyContinue
-            if ($existing) {
-                if (-not (Test-MeshClipFirewallRuleCompliant -Rule $existing -Protocol $protocols[$i] -Address $Address -Program $daemon -InterfaceAlias $adapter)) {
+            $existing = @(Get-NetFirewallRule -DisplayName $names[$i] -ErrorAction SilentlyContinue)
+            if ($existing.Count -gt 0) {
+                if ($existing.Count -ne 1 -or -not (Test-MeshClipFirewallRuleCompliant -Rule $existing[0] -Protocol $protocols[$i] -Address $Address -Program $daemon -InterfaceAlias $adapter)) {
                     throw "An existing rule named $($names[$i]) is not owned by MeshClip Kit or is too broad."
                 }
                 continue
@@ -878,7 +1011,10 @@ function New-MeshClipFirewallRules {
         throw
     }
 
-    return $names
+    return [pscustomobject]@{
+        Names        = @($names)
+        CreatedNames = @($created)
+    }
 }
 
 function Remove-MeshClipFirewallRules {
@@ -902,9 +1038,27 @@ function Remove-MeshClipFirewallRules {
     }
 }
 
+function Test-MeshClipTailscaleIPv4 {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $Address
+    )
+
+    $parsed = $null
+    if (-not [Net.IPAddress]::TryParse($Address, [ref]$parsed) -or
+        $parsed.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) {
+        return $false
+    }
+    $bytes = $parsed.GetAddressBytes()
+    return $bytes[0] -eq 100 -and (($bytes[1] -band 0xC0) -eq 0x40)
+}
+
 function Get-MeshClipKdeFirewallAudit {
     [CmdletBinding()]
-    param()
+    param(
+        [string] $Address
+    )
 
     $daemon = Get-MeshClipKdeExecutable -Kind daemon
     if (-not $daemon) {
@@ -912,6 +1066,7 @@ function Get-MeshClipKdeFirewallAudit {
             Status                = 'Missing'
             UnmanagedInboundAllow = 0
             BroadInboundAllow     = 0
+            BroadRuleNames        = @()
         }
     }
 
@@ -921,6 +1076,8 @@ function Get-MeshClipKdeFirewallAudit {
         $seenRuleIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         $unmanagedInboundAllow = 0
         $broadInboundAllow = 0
+        $broadRuleNames = [Collections.Generic.List[string]]::new()
+        $adapter = Get-MeshClipTailscaleAdapterAlias
 
         foreach ($applicationFilter in $applicationFilters) {
             $rules = @(Get-NetFirewallRule -AssociatedNetFirewallApplicationFilter $applicationFilter -ErrorAction Stop)
@@ -937,17 +1094,30 @@ function Get-MeshClipKdeFirewallAudit {
                 }
 
                 $unmanagedInboundAllow++
-                $addressFilter = $rule | Get-NetFirewallAddressFilter -ErrorAction Stop
-                $interfaceFilter = $rule | Get-NetFirewallInterfaceFilter -ErrorAction Stop
-                $remoteAddresses = @($addressFilter.RemoteAddress | ForEach-Object { [string]$_ })
-                $interfaceAliases = @($interfaceFilter.InterfaceAlias | ForEach-Object { [string]$_ })
-                $broadRemoteTokens = @('Any', '*', 'LocalSubnet', 'Internet', 'Intranet', 'DefaultGateway', 'DNS', 'DHCP', 'WINS')
-                $remoteIsBroad = $remoteAddresses.Count -eq 0 -or
-                    @($remoteAddresses | Where-Object { $_ -in $broadRemoteTokens }).Count -gt 0
-                $interfaceIsBroad = $interfaceAliases.Count -eq 0 -or
-                    @($interfaceAliases | Where-Object { $_ -in @('Any', '*') }).Count -gt 0
-                if ($remoteIsBroad -or $interfaceIsBroad) {
+                $portFilters = @($rule | Get-NetFirewallPortFilter -ErrorAction Stop)
+                $addressFilters = @($rule | Get-NetFirewallAddressFilter -ErrorAction Stop)
+                $interfaceFilters = @($rule | Get-NetFirewallInterfaceFilter -ErrorAction Stop)
+                $applicationFiltersForRule = @($rule | Get-NetFirewallApplicationFilter -ErrorAction Stop)
+                $expectedRemote = if ($Address) { @($Address) } else { @() }
+                $remoteAddresses = @($addressFilters | ForEach-Object { @($_.RemoteAddress) } | ForEach-Object { [string]$_ })
+                $remoteIsExact = if ($Address) {
+                    Test-MeshClipExactStringSet -Actual $remoteAddresses -Expected $expectedRemote
+                }
+                else {
+                    $remoteAddresses.Count -eq 1 -and (Test-MeshClipTailscaleIPv4 -Address $remoteAddresses[0])
+                }
+                $filterIsExact = $portFilters.Count -eq 1 -and
+                    $addressFilters.Count -eq 1 -and
+                    $interfaceFilters.Count -eq 1 -and
+                    $applicationFiltersForRule.Count -eq 1 -and
+                    $remoteIsExact -and
+                    (Test-MeshClipExactStringSet -Actual @($portFilters[0].LocalPort) -Expected @($script:FirewallPortRange)) -and
+                    $portFilters[0].Protocol.ToString() -in @('TCP', 'UDP') -and
+                    (Test-MeshClipExactStringSet -Actual @($interfaceFilters[0].InterfaceAlias) -Expected @($adapter)) -and
+                    (Test-MeshClipExactStringSet -Actual @($applicationFiltersForRule[0].Program) -Expected @($daemon))
+                if (-not $filterIsExact) {
                     $broadInboundAllow++
+                    $broadRuleNames.Add([string]$rule.Name)
                 }
             }
         }
@@ -956,6 +1126,7 @@ function Get-MeshClipKdeFirewallAudit {
             Status                 = 'Available'
             UnmanagedInboundAllow  = $unmanagedInboundAllow
             BroadInboundAllow      = $broadInboundAllow
+            BroadRuleNames         = @($broadRuleNames)
         }
     }
     catch {
@@ -963,7 +1134,98 @@ function Get-MeshClipKdeFirewallAudit {
             Status                 = 'Unknown'
             UnmanagedInboundAllow  = 0
             BroadInboundAllow      = 0
+            BroadRuleNames         = @()
         }
+    }
+}
+
+function Disable-MeshClipBroadKdeFirewallRules {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $Address
+    )
+
+    if (-not (Test-MeshClipAdministrator)) {
+        throw 'Administrator privileges are required to harden firewall rules.'
+    }
+    $audit = Get-MeshClipKdeFirewallAudit -Address $Address
+    if ($audit.Status -ne 'Available') {
+        throw 'The unmanaged KDE firewall audit is unavailable; refusing to change firewall rules.'
+    }
+    $daemon = Get-MeshClipKdeExecutable -Kind daemon
+    if (-not $daemon) {
+        throw 'KDE Connect daemon executable was not found.'
+    }
+    $disabled = [Collections.Generic.List[string]]::new()
+    try {
+        foreach ($name in @($audit.BroadRuleNames)) {
+            $rule = Get-NetFirewallRule -Name $name -ErrorAction Stop
+            $applications = @($rule | Get-NetFirewallApplicationFilter -ErrorAction Stop)
+            if ($rule.Group -eq $script:FirewallGroup -or
+                $rule.Direction.ToString() -ne 'Inbound' -or
+                $rule.Action.ToString() -ne 'Allow' -or
+                $rule.Enabled.ToString() -ne 'True' -or
+                $applications.Count -ne 1 -or
+                -not (Test-MeshClipExactStringSet -Actual @($applications[0].Program) -Expected @($daemon))) {
+                throw 'An unmanaged firewall rule changed during hardening; refusing to continue.'
+            }
+            $rule | Disable-NetFirewallRule -ErrorAction Stop
+            $disabled.Add($name)
+        }
+        return @($disabled)
+    }
+    catch {
+        foreach ($name in $disabled) {
+            Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue |
+                Where-Object { $_.Group -ne $script:FirewallGroup -and $_.Enabled.ToString() -eq 'False' } |
+                Enable-NetFirewallRule -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+function Enable-MeshClipDisabledUnmanagedKdeFirewallRules {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]] $Names
+    )
+
+    if (-not (Test-MeshClipAdministrator)) {
+        throw 'Administrator privileges are required to restore firewall rules.'
+    }
+    $daemon = Get-MeshClipKdeExecutable -Kind daemon
+    if (-not $daemon) {
+        throw 'KDE Connect daemon executable was not found.'
+    }
+    $rulesToEnable = [Collections.Generic.List[object]]::new()
+    foreach ($name in $Names) {
+        $rule = Get-NetFirewallRule -Name $name -ErrorAction Stop
+        $applications = @($rule | Get-NetFirewallApplicationFilter -ErrorAction Stop)
+        if ($rule.Group -eq $script:FirewallGroup -or
+            $rule.Direction.ToString() -ne 'Inbound' -or
+            $rule.Action.ToString() -ne 'Allow' -or
+            $rule.Enabled.ToString() -ne 'False' -or
+            $applications.Count -ne 1 -or
+            -not (Test-MeshClipExactStringSet -Actual @($applications[0].Program) -Expected @($daemon))) {
+            throw 'A recorded unmanaged firewall rule no longer matches its restore contract.'
+        }
+        $rulesToEnable.Add($rule)
+    }
+
+    $enabled = [Collections.Generic.List[object]]::new()
+    try {
+        foreach ($rule in $rulesToEnable) {
+            $rule | Enable-NetFirewallRule -ErrorAction Stop
+            $enabled.Add($rule)
+        }
+    }
+    catch {
+        foreach ($rule in $enabled) {
+            $rule | Disable-NetFirewallRule -ErrorAction SilentlyContinue
+        }
+        throw
     }
 }
 
@@ -1010,6 +1272,7 @@ Export-ModuleMember -Function @(
     'Get-MeshClipTailscaleStatus',
     'Get-MeshClipTailscalePreferences',
     'Resolve-MeshClipPeer',
+    'Resolve-MeshClipApprovedWindowsPeer',
     'ConvertTo-MeshClipRedactedAddress',
     'Get-MeshClipFileHashSafe',
     'Read-MeshClipTextDocument',
@@ -1018,16 +1281,21 @@ Export-ModuleMember -Function @(
     'Remove-MeshClipCustomDeviceFromLines',
     'Repair-MeshClipLegacyDuplicateGeneralLines',
     'Write-MeshClipKdeConfigChange',
+    'Restore-MeshClipKdeConfigChange',
     'Get-MeshClipState',
     'Save-MeshClipState',
     'Get-MeshClipStartupInfo',
     'New-MeshClipStartupShortcut',
     'Get-MeshClipTailscaleAdapterAlias',
     'Get-MeshClipFirewallRuleNames',
+    'Test-MeshClipExactStringSet',
+    'Test-MeshClipFirewallFilterContract',
     'Test-MeshClipFirewallRuleCompliant',
     'New-MeshClipFirewallRules',
     'Remove-MeshClipFirewallRules',
     'Get-MeshClipKdeFirewallAudit',
+    'Disable-MeshClipBroadKdeFirewallRules',
+    'Enable-MeshClipDisabledUnmanagedKdeFirewallRules',
     'Get-MeshClipKdeDeviceSummary',
     'Test-MeshClipCloudClipboardEnabled'
 )

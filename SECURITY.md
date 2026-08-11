@@ -21,10 +21,22 @@ scripts.
 
 - Pairing must be confirmed by the user on both devices.
 - `configure-peer.ps1` accepts only a peer already visible in the current
-  Tailnet; arbitrary public addresses are rejected.
+  Tailnet, online, and reported as Windows; arbitrary public addresses,
+  offline peers, and non-Windows peers are rejected.
+- Automatic selection is permitted only when exactly one other online Windows
+  peer exists. Otherwise the user must provide an exact peer name.
 - Each approved peer receives two inbound rules: TCP and UDP 1714-1764.
-- Rules are scoped to that peer's exact Tailscale IPv4 address.
+- Rules are validated by exact set equality for protocol, port, peer Tailscale
+  IPv4, KDE daemon path, and Tailscale interface. A rule that also contains
+  `Any`, another address, port, program, or interface is rejected.
 - Outbound rules and public-network-wide allow rules are not created.
+- Broad non-project inbound rules targeting KDE Connect are a blocking
+  diagnostic. They are changed only when the operator explicitly supplies
+  `-DisableBroadKdeFirewallRules`; the exact disabled rule identities are kept
+  only in ignored local state for optional rollback.
+- Any remaining enabled non-project KDE Connect inbound rule still blocks final
+  acceptance, even if it appears narrow; the hardening switch does not take
+  ownership of such unrelated rules.
 - Every Windows device must independently approve every intended peer.
 
 ## Clipboard warning

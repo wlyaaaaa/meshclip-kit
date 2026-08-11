@@ -41,6 +41,29 @@ Describe 'PowerShell source integrity' {
             $doctor | Should -Not -Match ([regex]::Escape($pattern))
         }
     }
+
+    It 'treats broad unmanaged KDE inbound rules as a failing diagnostic' {
+        $doctor = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\doctor.ps1') -Raw
+
+        $doctor | Should -Match "Add-Check 'Unmanaged KDE firewall' 'FAIL'"
+        $doctor | Should -Not -Match "Add-Check 'Unmanaged KDE firewall' 'WARN'"
+    }
+
+    It 'requires explicit broad-rule hardening before peer configuration can proceed' {
+        $configure = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\configure-peer.ps1') -Raw
+
+        $configure | Should -Match '\$DisableBroadKdeFirewallRules'
+        $configure | Should -Match 'Disable-MeshClipBroadKdeFirewallRules'
+        $configure | Should -Not -Match 'AllowOfflinePeer'
+    }
+
+    It 'preserves rollback ownership when uninstall actions are declined or changed' {
+        $uninstall = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\uninstall.ps1') -Raw
+
+        $uninstall | Should -Match 'OwnedAndUnchanged'
+        $uninstall | Should -Match 'RestoreDisabledBroadKdeFirewallRules'
+        $uninstall | Should -Not -Match '\$state\.addedPeers\s*=\s*@\(\)'
+    }
 }
 
 Describe 'Repository safety policy' {

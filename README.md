@@ -25,6 +25,8 @@ clipboard restrictions require separate P1 validation.
 - KDE Connect pairing still requires confirmation on both devices.
 - Windows inbound rules are restricted to one approved peer Tailscale IP and
   TCP/UDP ports 1714-1764.
+- Existing broad KDE Connect inbound rules block configuration. They are never
+  silently accepted or changed.
 - Scripts never request passwords, auth keys, private keys, or access tokens.
 - Diagnostics redact peer addresses and device identifiers by default.
 - Received files are not automatically opened or executed.
@@ -68,6 +70,19 @@ pwsh -File .\scripts\configure-peer.ps1 -Peer <DESKTOP_TAILSCALE_NAME>
 pwsh -File .\scripts\configure-peer.ps1 -Peer <LAPTOP_TAILSCALE_NAME>
 ```
 
+If `-Peer` is omitted, the script proceeds only when it can prove that exactly
+one other online Windows peer exists. If a broad non-project KDE Connect rule
+is detected, configuration fails closed. Review the explicit hardening preview
+before choosing to disable only those conflicting rules:
+
+```powershell
+pwsh -File .\scripts\configure-peer.ps1 -Peer <OTHER_DEVICE_TAILSCALE_NAME> -DisableBroadKdeFirewallRules -WhatIf
+pwsh -File .\scripts\configure-peer.ps1 -Peer <OTHER_DEVICE_TAILSCALE_NAME> -DisableBroadKdeFirewallRules
+```
+
+Disabled rules are recorded in local state and can be re-enabled by the
+explicit rollback option described under Removal.
+
 Then confirm the KDE Connect pairing request on both devices. In KDE Connect's
 Clipboard plugin settings for each peer, turn off **Including passwords**.
 
@@ -88,7 +103,7 @@ Mutating scripts support PowerShell's `-WhatIf` mode:
 ```powershell
 pwsh -File .\scripts\install-windows.ps1 -WhatIf
 pwsh -File .\scripts\configure-peer.ps1 -Peer example-device -WhatIf
-pwsh -File .\scripts\uninstall.ps1 -WhatIf
+pwsh -File .\scripts\uninstall.ps1
 ```
 
 ## Test
@@ -111,6 +126,14 @@ Tailscale or KDE Connect.
 ```powershell
 pwsh -File .\scripts\uninstall.ps1 -WhatIf
 pwsh -File .\scripts\uninstall.ps1 -Apply
+```
+
+To also restore broad unmanaged KDE Connect rules that MeshClip Kit previously
+disabled, preview and apply the opt-in rollback separately:
+
+```powershell
+pwsh -File .\scripts\uninstall.ps1 -RestoreDisabledBroadKdeFirewallRules
+pwsh -File .\scripts\uninstall.ps1 -Apply -RestoreDisabledBroadKdeFirewallRules
 ```
 
 ## Documentation
