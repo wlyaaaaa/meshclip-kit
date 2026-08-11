@@ -77,6 +77,7 @@ try {
     } while (-not $RunOnce)
 }
 finally {
-    try { $mutex.ReleaseMutex() } catch { }
+    try { $mutex.ReleaseMutex() }
+    catch { Write-Verbose 'The watchdog mutex was no longer owned during shutdown.' }
     $mutex.Dispose()
 }

@@ -13,7 +13,16 @@ The script installs missing official WinGet packages, enables Tailscale Run
 Unattended when the device is already authenticated, verifies KDE Connect's
 login startup shortcut, installs a silent current-user watchdog, and starts KDE
 Connect and the watchdog once. The watchdog checks every 60 seconds and starts
-only the trusted KDE Connect indicator when it is absent.
+only the trusted KDE Connect indicator when it is absent. A current-user,
+limited scheduled task invokes the hidden watchdog launcher every two minutes;
+the single-instance mutex prevents duplicate watchdogs and lets Task Scheduler
+restore the watchdog if its process exits.
+
+The startup layers are intentionally independent: KDE Connect has its ordinary
+login shortcut, the hidden watchdog has a login shortcut, and Task Scheduler
+supervises the watchdog. None runs before Windows user sign-in. The task does
+not wake the computer and Tailscale continues to use its own automatic Windows
+service and vendor recovery policy.
 
 If Tailscale needs authentication, complete the official browser flow and run
 the script again. Never paste an auth key into a command or chat.
@@ -75,10 +84,10 @@ files into a public issue or chat.
 the same pairing request on both computers. Device discovery alone is not
 pairing evidence.
 
-The two watchdog checks must be `PASS`: the login shortcut must still target
-the project-owned `wscript.exe` wrapper, and exactly one current-session
-watchdog must have a fresh heartbeat. Task Scheduler is not required; the
-watchdog runs only while that Windows user is logged in.
+All three watchdog checks must be `PASS`: the login shortcut must still target
+the project-owned `wscript.exe` wrapper, the supervisor task must retain its
+exact current-user limited contract, and exactly one current-session watchdog
+must have a fresh heartbeat.
 
 ## 5. Acceptance
 
@@ -88,4 +97,8 @@ watchdog runs only while that Windows user is logged in.
 - Compare SHA-256 on both sides with `Get-FileHash`.
 - Obtain explicit user approval before rebooting either device, then verify
   Tailscale pre-login availability and KDE Connect recovery after user login.
+- Close the KDE Connect indicator once and verify that the watchdog restores
+  exactly one indicator within about one minute.
+- End the hidden watchdog once and verify that the supervisor restores exactly
+  one watchdog within about two minutes.
 - Lock the logged-in session and record observed behavior.

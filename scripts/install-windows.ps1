@@ -25,6 +25,7 @@ try {
     $unattendedEnabledThisRun = $false
     $startupCreatedThisRun = $false
     $watchdogShortcutCreatedThisRun = $false
+    $watchdogTaskCreatedThisRun = $false
     $watchdogStartedThisRun = $false
     $winget = Get-MeshClipTrustedCommand -Name winget
     if (-not $winget) {
@@ -150,6 +151,23 @@ try {
                     Write-Host '[PASS] KDE Connect watchdog login startup is configured.'
                 }
 
+                $watchdogTask = Get-MeshClipWatchdogTaskInfo
+                if ($watchdogTask.Exists -and $watchdogTask.Compliant) {
+                    Write-Host '[PASS] KDE Connect watchdog supervisor task is already configured.'
+                }
+                elseif ($watchdogTask.Exists) {
+                    throw 'A different KDE Connect watchdog supervisor task exists. Refusing to overwrite it.'
+                }
+                elseif ($PSCmdlet.ShouldProcess('Current user scheduled tasks', 'Create the low-privilege watchdog supervisor')) {
+                    $watchdogTaskResult = New-MeshClipWatchdogTask
+                    if ($watchdogTaskResult.Created) {
+                        $state.watchdogTaskCreated = $true
+                        $stateChanged = $true
+                        $watchdogTaskCreatedThisRun = $true
+                    }
+                    Write-Host '[PASS] KDE Connect watchdog supervisor task is configured.'
+                }
+
                 if (-not $NoLaunchKdeConnect -and
                     -not (Get-MeshClipWatchdogProcessInfo).Running -and
                     $PSCmdlet.ShouldProcess('KDE Connect watchdog', 'Start one silent current-session watchdog')) {
@@ -159,6 +177,13 @@ try {
                 }
             }
             catch {
+                if ($watchdogTaskCreatedThisRun) {
+                    try {
+                        Remove-MeshClipWatchdogTask | Out-Null
+                        $state.watchdogTaskCreated = $false
+                    }
+                    catch { Write-Warning 'The newly created watchdog supervisor task could not be rolled back.' }
+                }
                 if ($watchdogStartedThisRun) {
                     Stop-MeshClipWatchdogProcesses -ErrorAction SilentlyContinue
                 }
@@ -183,6 +208,10 @@ try {
         }
         catch {
             $rollbackErrors = [Collections.Generic.List[string]]::new()
+            if ($watchdogTaskCreatedThisRun) {
+                try { Remove-MeshClipWatchdogTask | Out-Null }
+                catch { $rollbackErrors.Add('watchdog supervisor task') }
+            }
             if ($watchdogStartedThisRun) {
                 try { Stop-MeshClipWatchdogProcesses }
                 catch { $rollbackErrors.Add('watchdog process') }

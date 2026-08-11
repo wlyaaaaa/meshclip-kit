@@ -27,6 +27,9 @@ Write-Host "- Remove the login shortcut only if MeshClip Kit created it and it i
 if ($state.watchdogShortcutCreated) {
     Write-Host '- Stop the current-session watchdog and remove its login shortcut only if it is unchanged.'
 }
+if ($state.watchdogTaskCreated) {
+    Write-Host '- Remove the low-privilege watchdog supervisor task only if it is unchanged.'
+}
 if ($RestoreDisabledBroadKdeFirewallRules -and @($state.disabledBroadFirewallRules).Count -gt 0) {
     Write-Host "- Re-enable $(@($state.disabledBroadFirewallRules).Count) broad unmanaged KDE Connect firewall rules previously disabled by MeshClip Kit."
 }
@@ -85,7 +88,32 @@ try {
         }
     }
 
-    if ($state.watchdogShortcutCreated) {
+    $watchdogRemovalBlocked = $false
+    if ($state.watchdogTaskCreated) {
+        $watchdogTask = Get-MeshClipWatchdogTaskInfo
+        if ($watchdogTask.Exists -and $watchdogTask.OwnedAndUnchanged) {
+            if ($PSCmdlet.ShouldProcess('KDE Connect watchdog supervisor task', 'Remove the project-owned low-privilege task')) {
+                Remove-MeshClipWatchdogTask | Out-Null
+                $state.watchdogTaskCreated = $false
+                Write-Host '[PASS] Removed the project-created watchdog supervisor task.'
+            }
+            else {
+                $watchdogRemovalBlocked = $true
+            }
+        }
+        elseif ($watchdogTask.Exists) {
+            $watchdogRemovalBlocked = $true
+            Write-Warning 'The watchdog supervisor task changed after setup; all watchdog resources were preserved.'
+        }
+        else {
+            $state.watchdogTaskCreated = $false
+        }
+    }
+
+    if ($state.watchdogShortcutCreated -and $watchdogRemovalBlocked) {
+        Write-Warning 'Watchdog startup and runtime were preserved because the supervisor task was not removed.'
+    }
+    elseif ($state.watchdogShortcutCreated) {
         $watchdogStartup = Get-MeshClipWatchdogStartupInfo
         if ($watchdogStartup.Exists -and -not $watchdogStartup.OwnedAndUnchanged) {
             Write-Warning 'Watchdog startup shortcut changed after setup; it and the running watchdog were preserved.'

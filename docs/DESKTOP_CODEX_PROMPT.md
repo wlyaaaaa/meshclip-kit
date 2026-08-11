@@ -22,7 +22,8 @@ Expected reviewed main commit:
    same script normally. Use only Tailscale's official browser login; never
    request, print, store, or generate credentials, auth keys, tokens, private
    keys, or certificates. Verify the project-owned silent KDE Connect watchdog
-   login shortcut, one current-session process, and a fresh heartbeat.
+   login shortcut, low-privilege supervisor task, one current-session process,
+   and a fresh heartbeat.
 4. Inspect tailscale status --json only locally. If exactly one other online
    Windows peer exists, use it. Otherwise stop for explicit local selection.
    Never print the device list, full address, device ID, or private DNS name.
@@ -35,8 +36,10 @@ Expected reviewed main commit:
 6. Open KDE Connect and ask the user to confirm the same pairing request on
    both computers. Never accept silently. Then ask the user to disable
    "Including passwords" in the peer Clipboard plugin on both computers.
-7. Run doctor.ps1 for the exact peer. Broad firewall access is FAIL; manual
-   pairing/password checks may remain WARN until the user confirms them.
+7. Run doctor.ps1 for the exact peer. Require the Tailscale Windows service,
+   KDE Connect login startup, and KDE Connect watchdog checks to pass. Broad
+   firewall access is FAIL; manual pairing/password checks may remain WARN
+   until the user confirms them.
 8. Only while the computers are on different LANs, test generated non-secret
    mixed Chinese/English/Emoji/URL text in both directions, 100 numbered text
    copies without echo loops, and generated small, 100,000,000-byte, and

@@ -39,6 +39,20 @@ else {
     $tailscaleVersionDetail = if ($tailscaleVersion) { "Trusted executable found (version $tailscaleVersion)." } else { 'Trusted executable found.' }
     Add-Check 'Tailscale installation' 'PASS' $tailscaleVersionDetail
     try {
+        $tailscaleServices = @(Get-CimInstance Win32_Service -Filter "Name='Tailscale'" -ErrorAction Stop)
+        if ($tailscaleServices.Count -eq 1 -and
+            $tailscaleServices[0].StartMode -eq 'Auto' -and
+            $tailscaleServices[0].State -eq 'Running') {
+            Add-Check 'Tailscale Windows service' 'PASS' 'Service startup is automatic and the service is running.'
+        }
+        else {
+            Add-Check 'Tailscale Windows service' 'FAIL' 'The expected automatic, running Tailscale service was not verified.'
+        }
+    }
+    catch {
+        Add-Check 'Tailscale Windows service' 'FAIL' 'Windows service state could not be read.'
+    }
+    try {
         $status = Get-MeshClipTailscaleStatus
         if ($status.BackendState -eq 'Running' -and $status.SelfOnline) {
             Add-Check 'Tailscale online' 'PASS' 'Backend is running and this device is online.'
@@ -135,7 +149,23 @@ elseif ($watchdogStartup.Exists) {
     Add-Check 'KDE watchdog login startup' 'FAIL' 'A watchdog shortcut exists but does not match the project-owned contract.'
 }
 else {
-    Add-Check 'KDE watchdog login startup' 'WARN' 'The optional KDE Connect watchdog is not installed.'
+    Add-Check 'KDE watchdog login startup' 'FAIL' 'The KDE Connect watchdog login shortcut is not installed.'
+}
+
+try {
+    $watchdogTask = Get-MeshClipWatchdogTaskInfo
+    if ($watchdogTask.Exists -and $watchdogTask.Compliant) {
+        Add-Check 'KDE watchdog supervisor' 'PASS' 'A current-user, limited task checks the watchdog every two minutes.'
+    }
+    elseif ($watchdogTask.Exists) {
+        Add-Check 'KDE watchdog supervisor' 'FAIL' 'The named task does not match the required low-privilege contract.'
+    }
+    else {
+        Add-Check 'KDE watchdog supervisor' 'FAIL' 'The KDE Connect watchdog supervisor task is not installed.'
+    }
+}
+catch {
+    Add-Check 'KDE watchdog supervisor' 'FAIL' 'The watchdog supervisor task could not be safely inspected.'
 }
 
 $watchdogProcess = Get-MeshClipWatchdogProcessInfo
@@ -148,7 +178,7 @@ elseif ($watchdogStartup.Exists -and $watchdogStartup.OwnedAndUnchanged) {
     Add-Check 'KDE watchdog runtime' 'FAIL' 'Watchdog startup is configured but its process or heartbeat is not healthy.'
 }
 else {
-    Add-Check 'KDE watchdog runtime' 'WARN' 'No project-owned watchdog runtime is expected.'
+    Add-Check 'KDE watchdog runtime' 'FAIL' 'The required project-owned watchdog runtime is not healthy.'
 }
 
 $paths = Get-MeshClipPaths

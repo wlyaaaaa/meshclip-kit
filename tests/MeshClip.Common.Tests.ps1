@@ -331,3 +331,109 @@ Describe 'Watchdog heartbeat timestamp parsing' {
             Should -Be ([TimeSpan]::Zero)
     }
 }
+
+Describe 'Watchdog supervisor task contract' {
+    BeforeEach {
+        $script:wrapperPath = 'C:\MeshClip\scripts\watch-kdeconnect-hidden.vbs'
+        $script:currentSid = 'S-1-5-21-100-200-300-1001'
+        $script:taskContract = [pscustomobject]@{
+            ActionCount                = 1
+            Execute                    = Join-Path $env:WINDIR 'System32\wscript.exe'
+            Arguments                  = '"C:\MeshClip\scripts\watch-kdeconnect-hidden.vbs"'
+            WorkingDirectory           = 'C:\MeshClip\scripts'
+            Description                = 'MeshClip Kit current-user supervisor for the KDE Connect watchdog'
+            PrincipalSid               = $script:currentSid
+            PrincipalLogonType         = 'Interactive'
+            PrincipalRunLevel          = 'Limited'
+            TriggerCount               = 2
+            LogonTriggerCount          = 1
+            LogonSid                   = $script:currentSid
+            LogonEnabled               = $true
+            TimeTriggerCount           = 1
+            TimeEnabled                = $true
+            RepetitionInterval         = 'PT2M'
+            RepetitionDuration         = 'P3650D'
+            MultipleInstances          = 'IgnoreNew'
+            DisallowStartIfOnBatteries = $false
+            StopIfGoingOnBatteries     = $false
+            StartWhenAvailable         = $true
+            ExecutionTimeLimit         = 'PT0S'
+            RestartCount               = 3
+            RestartInterval            = 'PT1M'
+            SettingsEnabled            = $true
+            RunOnlyIfIdle              = $false
+            RunOnlyIfNetworkAvailable  = $false
+        }
+    }
+
+    It 'accepts the exact current-user limited supervisor' {
+        Test-MeshClipWatchdogTaskContract `
+            -Contract $script:taskContract `
+            -WrapperPath $script:wrapperPath `
+            -CurrentUserSid $script:currentSid | Should -BeTrue
+    }
+
+    It 'rejects an elevated supervisor' {
+        $script:taskContract.PrincipalRunLevel = 'Highest'
+
+        Test-MeshClipWatchdogTaskContract `
+            -Contract $script:taskContract `
+            -WrapperPath $script:wrapperPath `
+            -CurrentUserSid $script:currentSid | Should -BeFalse
+    }
+
+    It 'rejects an additional action' {
+        $script:taskContract.ActionCount = 2
+
+        Test-MeshClipWatchdogTaskContract `
+            -Contract $script:taskContract `
+            -WrapperPath $script:wrapperPath `
+            -CurrentUserSid $script:currentSid | Should -BeFalse
+    }
+
+    It 'rejects changed wrapper arguments' {
+        $script:taskContract.Arguments = '"C:\Temp\other.vbs"'
+
+        Test-MeshClipWatchdogTaskContract `
+            -Contract $script:taskContract `
+            -WrapperPath $script:wrapperPath `
+            -CurrentUserSid $script:currentSid | Should -BeFalse
+    }
+
+    It 'rejects a changed repetition interval' {
+        $script:taskContract.RepetitionInterval = 'PT30M'
+
+        Test-MeshClipWatchdogTaskContract `
+            -Contract $script:taskContract `
+            -WrapperPath $script:wrapperPath `
+            -CurrentUserSid $script:currentSid | Should -BeFalse
+    }
+}
+
+Describe 'Backward-compatible watchdog state' {
+    BeforeEach {
+        $script:originalLocalAppData = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = $TestDrive
+    }
+
+    AfterEach {
+        $env:LOCALAPPDATA = $script:originalLocalAppData
+    }
+
+    It 'defaults both watchdog ownership fields for older schema-one state' {
+        $stateRoot = Join-Path $TestDrive 'MeshClipKit'
+        New-Item -ItemType Directory -Path $stateRoot | Out-Null
+        @{
+            schemaVersion = 1
+            addedPeers = @()
+            firewallRules = @()
+            startupShortcutCreated = $false
+            tailscaleModeChanged = $false
+        } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stateRoot 'user-state.json')
+
+        $state = Get-MeshClipState
+
+        $state.watchdogShortcutCreated | Should -BeFalse
+        $state.watchdogTaskCreated | Should -BeFalse
+    }
+}

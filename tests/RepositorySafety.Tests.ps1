@@ -21,7 +21,7 @@ Describe 'PowerShell source integrity' {
     }
 
     It 'marks each mutating entry point as SupportsShouldProcess' {
-        foreach ($name in @('install-windows.ps1', 'configure-peer.ps1', 'uninstall.ps1')) {
+        foreach ($name in @('install-windows.ps1', 'configure-peer.ps1', 'uninstall.ps1', 'watch-kdeconnect.ps1')) {
             $content = Get-Content -LiteralPath (Join-Path $script:repoRoot "scripts\$name") -Raw
             $content | Should -Match '(?s)\[CmdletBinding\(SupportsShouldProcess\s*=\s*\$true'
         }
@@ -34,6 +34,9 @@ Describe 'PowerShell source integrity' {
             'Remove-NetFirewallRule',
             'Set-NetFirewallRule',
             'Remove-Item',
+            'Register-ScheduledTask',
+            'Unregister-ScheduledTask',
+            'Start-ScheduledTask',
             'Start-Process',
             'Save-MeshClipState',
             'Write-MeshClipKdeConfigChange'
@@ -76,9 +79,17 @@ Describe 'PowerShell source integrity' {
         Test-Path -LiteralPath $watchdogPath -PathType Leaf | Should -BeTrue
         Test-Path -LiteralPath $wrapperPath -PathType Leaf | Should -BeTrue
         $module | Should -Match 'New-MeshClipWatchdogStartupShortcut'
+        $module | Should -Match 'New-MeshClipWatchdogTask'
         $install | Should -Match 'Start-MeshClipWatchdog'
+        $install | Should -Match 'watchdogTaskCreated'
         $doctor | Should -Match 'Get-MeshClipWatchdogStatus'
+        $doctor | Should -Match 'Get-MeshClipWatchdogTaskInfo'
         $uninstall | Should -Match 'Stop-MeshClipWatchdogProcesses'
+        $uninstall | Should -Match 'watchdogTask\.OwnedAndUnchanged'
+
+        $wrapper = Get-Content -LiteralPath $wrapperPath -Raw
+        $wrapper | Should -Match '%ProgramFiles%'
+        $wrapper | Should -Match '%LOCALAPPDATA%.*Microsoft\\WindowsApps\\pwsh\.exe'
     }
 
     It 'keeps the watchdog out of clipboard, network, and firewall configuration' {

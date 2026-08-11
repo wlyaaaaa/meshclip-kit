@@ -7,6 +7,11 @@ $script:ProjectName = 'MeshClip Kit'
 $script:FirewallGroup = 'MeshClip Kit'
 $script:FirewallPortRange = '1714-1764'
 $script:StateSchemaVersion = 1
+$script:WatchdogTaskName = 'KDE Connect Watchdog'
+$script:WatchdogTaskPath = '\MeshClip Kit\'
+$script:WatchdogTaskDescription = 'MeshClip Kit current-user supervisor for the KDE Connect watchdog'
+$script:WatchdogTaskInterval = 'PT2M'
+$script:WatchdogTaskDuration = 'P3650D'
 
 function Get-MeshClipPaths {
     [CmdletBinding()]
@@ -749,6 +754,7 @@ function Get-MeshClipState {
             pendingTransaction     = $null
             startupShortcutCreated = $false
             watchdogShortcutCreated = $false
+            watchdogTaskCreated    = $false
             tailscaleModeChanged   = $false
         }
     }
@@ -769,6 +775,9 @@ function Get-MeshClipState {
     }
     if (-not $state.PSObject.Properties['watchdogShortcutCreated']) {
         $state | Add-Member -NotePropertyName watchdogShortcutCreated -NotePropertyValue $false
+    }
+    if (-not $state.PSObject.Properties['watchdogTaskCreated']) {
+        $state | Add-Member -NotePropertyName watchdogTaskCreated -NotePropertyValue $false
     }
     return $state
 }
@@ -933,6 +942,243 @@ function New-MeshClipWatchdogStartupShortcut {
     $shortcut.Description = 'MeshClip Kit silent KDE Connect watchdog'
     $shortcut.Save()
     [pscustomobject]@{ Created = $true; Path = $paths.WatchdogShortcut }
+}
+
+function ConvertTo-MeshClipSid {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $Identity
+    )
+
+    try {
+        return ([Security.Principal.SecurityIdentifier]::new($Identity)).Value
+    }
+    catch {
+        try {
+            $account = [Security.Principal.NTAccount]::new($Identity)
+            return $account.Translate([Security.Principal.SecurityIdentifier]).Value
+        }
+        catch {
+            return $null
+        }
+    }
+}
+
+function Test-MeshClipWatchdogTaskContract {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [pscustomobject] $Contract,
+
+        [Parameter(Mandatory)]
+        [string] $WrapperPath,
+
+        [Parameter(Mandatory)]
+        [string] $CurrentUserSid
+    )
+
+    $required = @(
+        'ActionCount', 'Execute', 'Arguments', 'WorkingDirectory', 'Description',
+        'PrincipalSid', 'PrincipalLogonType', 'PrincipalRunLevel', 'TriggerCount',
+        'LogonTriggerCount', 'LogonSid', 'LogonEnabled', 'TimeTriggerCount',
+        'TimeEnabled', 'RepetitionInterval', 'RepetitionDuration',
+        'MultipleInstances', 'DisallowStartIfOnBatteries',
+        'StopIfGoingOnBatteries', 'StartWhenAvailable', 'ExecutionTimeLimit',
+        'RestartCount', 'RestartInterval', 'SettingsEnabled', 'RunOnlyIfIdle',
+        'RunOnlyIfNetworkAvailable'
+    )
+    foreach ($property in $required) {
+        if (-not $Contract.PSObject.Properties[$property]) {
+            return $false
+        }
+    }
+
+    $expectedExecutable = Join-Path $env:WINDIR 'System32\wscript.exe'
+    $expectedArguments = '"' + $WrapperPath + '"'
+    $expectedWorkingDirectory = Split-Path -Parent $WrapperPath
+    return [bool](
+        $Contract.ActionCount -eq 1 -and
+        [StringComparer]::OrdinalIgnoreCase.Equals([string]$Contract.Execute, $expectedExecutable) -and
+        [StringComparer]::OrdinalIgnoreCase.Equals([string]$Contract.Arguments, $expectedArguments) -and
+        [StringComparer]::OrdinalIgnoreCase.Equals([string]$Contract.WorkingDirectory, $expectedWorkingDirectory) -and
+        $Contract.Description -ceq $script:WatchdogTaskDescription -and
+        $Contract.PrincipalSid -eq $CurrentUserSid -and
+        $Contract.PrincipalLogonType -eq 'Interactive' -and
+        $Contract.PrincipalRunLevel -eq 'Limited' -and
+        $Contract.TriggerCount -eq 2 -and
+        $Contract.LogonTriggerCount -eq 1 -and
+        $Contract.LogonSid -eq $CurrentUserSid -and
+        [bool]$Contract.LogonEnabled -and
+        $Contract.TimeTriggerCount -eq 1 -and
+        [bool]$Contract.TimeEnabled -and
+        $Contract.RepetitionInterval -eq $script:WatchdogTaskInterval -and
+        $Contract.RepetitionDuration -eq $script:WatchdogTaskDuration -and
+        $Contract.MultipleInstances -eq 'IgnoreNew' -and
+        -not [bool]$Contract.DisallowStartIfOnBatteries -and
+        -not [bool]$Contract.StopIfGoingOnBatteries -and
+        [bool]$Contract.StartWhenAvailable -and
+        $Contract.ExecutionTimeLimit -eq 'PT0S' -and
+        $Contract.RestartCount -eq 3 -and
+        $Contract.RestartInterval -eq 'PT1M' -and
+        [bool]$Contract.SettingsEnabled -and
+        -not [bool]$Contract.RunOnlyIfIdle -and
+        -not [bool]$Contract.RunOnlyIfNetworkAvailable
+    )
+}
+
+function Get-MeshClipWatchdogTaskInfo {
+    [CmdletBinding()]
+    param()
+
+    Import-Module ScheduledTasks -ErrorAction Stop
+    $tasks = @(Get-ScheduledTask -TaskName $script:WatchdogTaskName -TaskPath $script:WatchdogTaskPath -ErrorAction SilentlyContinue)
+    if ($tasks.Count -eq 0) {
+        return [pscustomobject]@{
+            Exists            = $false
+            Compliant         = $false
+            OwnedAndUnchanged = $false
+            State             = $null
+            TaskName          = $script:WatchdogTaskName
+            TaskPath          = $script:WatchdogTaskPath
+        }
+    }
+    if ($tasks.Count -ne 1) {
+        throw 'The KDE Connect watchdog supervisor task could not be identified uniquely.'
+    }
+
+    $task = $tasks[0]
+    $paths = Get-MeshClipPaths
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $actions = @($task.Actions)
+    $triggers = @($task.Triggers)
+    $logonTriggers = @($triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' })
+    $timeTriggers = @($triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskTimeTrigger' })
+    $contract = [pscustomobject]@{
+        ActionCount                  = $actions.Count
+        Execute                      = if ($actions.Count -eq 1) { [string]$actions[0].Execute } else { $null }
+        Arguments                    = if ($actions.Count -eq 1) { [string]$actions[0].Arguments } else { $null }
+        WorkingDirectory             = if ($actions.Count -eq 1) { [string]$actions[0].WorkingDirectory } else { $null }
+        Description                  = [string]$task.Description
+        PrincipalSid                 = ConvertTo-MeshClipSid -Identity ([string]$task.Principal.UserId)
+        PrincipalLogonType           = [string]$task.Principal.LogonType
+        PrincipalRunLevel            = [string]$task.Principal.RunLevel
+        TriggerCount                 = $triggers.Count
+        LogonTriggerCount            = $logonTriggers.Count
+        LogonSid                     = if ($logonTriggers.Count -eq 1) { ConvertTo-MeshClipSid -Identity ([string]$logonTriggers[0].UserId) } else { $null }
+        LogonEnabled                 = if ($logonTriggers.Count -eq 1) { [bool]$logonTriggers[0].Enabled } else { $false }
+        TimeTriggerCount             = $timeTriggers.Count
+        TimeEnabled                  = if ($timeTriggers.Count -eq 1) { [bool]$timeTriggers[0].Enabled } else { $false }
+        RepetitionInterval           = if ($timeTriggers.Count -eq 1) { [string]$timeTriggers[0].Repetition.Interval } else { $null }
+        RepetitionDuration           = if ($timeTriggers.Count -eq 1) { [string]$timeTriggers[0].Repetition.Duration } else { $null }
+        MultipleInstances            = [string]$task.Settings.MultipleInstances
+        DisallowStartIfOnBatteries   = [bool]$task.Settings.DisallowStartIfOnBatteries
+        StopIfGoingOnBatteries       = [bool]$task.Settings.StopIfGoingOnBatteries
+        StartWhenAvailable           = [bool]$task.Settings.StartWhenAvailable
+        ExecutionTimeLimit           = [string]$task.Settings.ExecutionTimeLimit
+        RestartCount                 = [int]$task.Settings.RestartCount
+        RestartInterval              = [string]$task.Settings.RestartInterval
+        SettingsEnabled              = [bool]$task.Settings.Enabled
+        RunOnlyIfIdle                = [bool]$task.Settings.RunOnlyIfIdle
+        RunOnlyIfNetworkAvailable    = [bool]$task.Settings.RunOnlyIfNetworkAvailable
+    }
+    $componentsExist = [bool](
+        (Test-Path -LiteralPath $paths.WatchdogScript -PathType Leaf) -and
+        (Test-Path -LiteralPath $paths.WatchdogWrapper -PathType Leaf)
+    )
+    $compliant = [bool](
+        $componentsExist -and
+        (Test-MeshClipWatchdogTaskContract -Contract $contract -WrapperPath $paths.WatchdogWrapper -CurrentUserSid $currentSid)
+    )
+    [pscustomobject]@{
+        Exists            = $true
+        Compliant         = $compliant
+        OwnedAndUnchanged = $compliant
+        State             = [string]$task.State
+        TaskName          = $script:WatchdogTaskName
+        TaskPath          = $script:WatchdogTaskPath
+    }
+}
+
+function New-MeshClipWatchdogTask {
+    [CmdletBinding()]
+    param()
+
+    $paths = Get-MeshClipPaths
+    foreach ($required in @($paths.WatchdogScript, $paths.WatchdogWrapper)) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+            throw 'A MeshClip Kit watchdog component is missing.'
+        }
+    }
+    $existing = Get-MeshClipWatchdogTaskInfo
+    if ($existing.Exists) {
+        if (-not $existing.Compliant) {
+            throw 'A different KDE Connect watchdog supervisor task already exists. Refusing to overwrite it.'
+        }
+        return [pscustomobject]@{ Created = $false; TaskName = $script:WatchdogTaskName; TaskPath = $script:WatchdogTaskPath }
+    }
+
+    Import-Module ScheduledTasks -ErrorAction Stop
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+    if (-not (Test-Path -LiteralPath $wscript -PathType Leaf)) {
+        throw 'The Windows Script Host executable was not found.'
+    }
+    $action = New-ScheduledTaskAction `
+        -Execute $wscript `
+        -Argument ('"' + $paths.WatchdogWrapper + '"') `
+        -WorkingDirectory $PSScriptRoot
+    $triggers = @(
+        (New-ScheduledTaskTrigger -AtLogOn -User $sid),
+        (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration (New-TimeSpan -Days 3650))
+    )
+    $settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -MultipleInstances IgnoreNew `
+        -RestartCount 3 `
+        -RestartInterval (New-TimeSpan -Minutes 1)
+    $principal = New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Limited
+    $created = $false
+    try {
+        Register-ScheduledTask `
+            -TaskName $script:WatchdogTaskName `
+            -TaskPath $script:WatchdogTaskPath `
+            -Action $action `
+            -Trigger $triggers `
+            -Settings $settings `
+            -Principal $principal `
+            -Description $script:WatchdogTaskDescription | Out-Null
+        $created = $true
+        $verified = Get-MeshClipWatchdogTaskInfo
+        if (-not $verified.Compliant) {
+            throw 'The registered watchdog supervisor task did not match the required low-privilege contract.'
+        }
+        [pscustomobject]@{ Created = $true; TaskName = $script:WatchdogTaskName; TaskPath = $script:WatchdogTaskPath }
+    }
+    catch {
+        if ($created) {
+            Unregister-ScheduledTask -TaskName $script:WatchdogTaskName -TaskPath $script:WatchdogTaskPath -Confirm:$false -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+function Remove-MeshClipWatchdogTask {
+    [CmdletBinding()]
+    param()
+
+    $existing = Get-MeshClipWatchdogTaskInfo
+    if (-not $existing.Exists) {
+        return $false
+    }
+    if (-not $existing.OwnedAndUnchanged) {
+        throw 'The KDE Connect watchdog supervisor task changed after setup; automatic removal was refused.'
+    }
+    Unregister-ScheduledTask -TaskName $script:WatchdogTaskName -TaskPath $script:WatchdogTaskPath -Confirm:$false
+    return $true
 }
 
 function Get-MeshClipWatchdogProcesses {
@@ -1508,9 +1754,14 @@ Export-ModuleMember -Function @(
     'Save-MeshClipState',
     'Get-MeshClipStartupInfo',
     'New-MeshClipStartupShortcut',
+    'ConvertTo-MeshClipSid',
     'Test-MeshClipWatchdogCommandLine',
     'Get-MeshClipWatchdogStartupInfo',
     'New-MeshClipWatchdogStartupShortcut',
+    'Test-MeshClipWatchdogTaskContract',
+    'Get-MeshClipWatchdogTaskInfo',
+    'New-MeshClipWatchdogTask',
+    'Remove-MeshClipWatchdogTask',
     'Get-MeshClipWatchdogProcessInfo',
     'Start-MeshClipWatchdog',
     'Stop-MeshClipWatchdogProcesses',

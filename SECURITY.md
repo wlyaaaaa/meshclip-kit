@@ -46,6 +46,26 @@ device identity, addresses, Tailscale state, files, or firewall configuration.
   ownership of such unrelated rules.
 - Every Windows device must independently approve every intended peer.
 
+## Startup and watchdog policy
+
+- Tailscale remains an automatic Windows service using its vendor-provided
+  failure-recovery actions. MeshClip Kit does not replace that service or run a
+  second privileged network watchdog.
+- The hidden watchdog and its Task Scheduler supervisor run only for the current
+  signed-in user. The supervisor uses `Interactive` logon type and `Limited`
+  run level; neither component runs as `SYSTEM` or with highest privileges.
+- The supervisor's only action is the exact project-owned `wscript.exe` wrapper.
+  The wrapper starts the exact watchdog script, and the watchdog starts only
+  the trusted `kdeconnect-indicator.exe` when it is absent.
+- The watchdog does not inspect or persist clipboard or file content. Its local
+  heartbeat contains only a schema, timestamp, bounded status, and restart
+  count.
+- Registration, diagnosis, and removal require the full exact task contract.
+  A pre-existing or subsequently changed same-named task is not overwritten or
+  deleted.
+- The task neither wakes a sleeping device nor provides pre-login receipt. Its
+  two-minute trigger supervises the watchdog only while this user is signed in.
+
 ## Clipboard warning
 
 Clipboard content may contain passwords, API keys, OTPs, session cookies, or
