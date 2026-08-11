@@ -1,0 +1,35 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install pinned test tools
+        shell: pwsh
+        run: |
+          Set-PSResourceRepository -Name PSGallery -Trusted
+          Install-PSResource -Name Pester -Version 5.7.1 -Scope CurrentUser -TrustRepository
+          Install-PSResource -Name PSScriptAnalyzer -Version 1.24.0 -Scope CurrentUser -TrustRepository
+
+      - name: Run repository tests
+        shell: pwsh
+        run: ./scripts/test-repository.ps1
+
+      - name: Run static analysis
+        shell: pwsh
+        run: |
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.24.0
+          $results = Invoke-ScriptAnalyzer -Path ./scripts -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+          $results | Format-Table -AutoSize
+          if ($results) { throw "PSScriptAnalyzer found $($results.Count) issue(s)." }

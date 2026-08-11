@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "approvedPeers": [
+    {
+      "role": "desktop",
+      "tailscaleName": "desktop.meshclip.example.invalid"
+    },
+    {
+      "role": "laptop",
+      "tailscaleName": "laptop.meshclip.example.invalid"
+    }
+  ]
+}

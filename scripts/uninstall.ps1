@@ -1,0 +1,88 @@
+#Requires -Version 7.0
+
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
+param(
+    [switch] $Apply,
+    [switch] $RestoreTailscaleMode
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'MeshClip.Common.psm1') -Force
+
+$paths = Get-MeshClipPaths
+if (-not (Test-Path -LiteralPath $paths.StatePath -PathType Leaf)) {
+    throw 'No valid MeshClip Kit state file exists. Refusing to guess which resources to remove.'
+}
+$state = Get-MeshClipState
+
+Write-Host 'Removal plan:'
+Write-Host "- Remove $(@($state.addedPeers).Count) MeshClip Kit-added KDE custom peer entries."
+Write-Host "- Remove $(@($state.firewallRules).Count) recorded project-owned firewall rules."
+Write-Host "- Remove the login shortcut only if MeshClip Kit created it and it is unchanged."
+if ($RestoreTailscaleMode -and $state.tailscaleModeChanged) {
+    Write-Host '- Restore Tailscale unattended mode to disabled.'
+}
+Write-Host '- Keep Tailscale, KDE Connect, pairings, certificates, private keys, and config backups.'
+
+if (-not $Apply) {
+    Write-Host ''
+    Write-Host 'Preview only. Rerun with -Apply after reviewing this plan; -WhatIf remains supported.'
+    return
+}
+if (@($state.firewallRules).Count -gt 0 -and -not (Test-MeshClipAdministrator)) {
+    throw 'Open PowerShell 7 as Administrator before applying removal.'
+}
+
+$lock = Enter-MeshClipOperationLock
+try {
+    foreach ($address in @($state.addedPeers)) {
+        $redacted = ConvertTo-MeshClipRedactedAddress -Address $address
+        if ($PSCmdlet.ShouldProcess('KDE Connect customDevices', "Remove project-added peer $redacted")) {
+            $result = Write-MeshClipKdeConfigChange -Action Remove -Address $address
+            if ($result.Changed) {
+                Write-Host "[PASS] Removed one project-added peer at $redacted."
+            }
+        }
+    }
+    $state.addedPeers = @()
+
+    if (@($state.firewallRules).Count -gt 0 -and $PSCmdlet.ShouldProcess('Windows Firewall', 'Remove recorded MeshClip Kit rules')) {
+        Remove-MeshClipFirewallRules -Names @($state.firewallRules)
+        $state.firewallRules = @()
+        Write-Host '[PASS] Removed recorded project-owned firewall rules.'
+    }
+
+    if ($state.startupShortcutCreated) {
+        $startup = Get-MeshClipStartupInfo
+        if ($startup.Exists -and $startup.Matches) {
+            if ($PSCmdlet.ShouldProcess($paths.StartupShortcut, 'Remove MeshClip Kit-created startup shortcut')) {
+                Remove-Item -LiteralPath $paths.StartupShortcut -Force
+                $state.startupShortcutCreated = $false
+                Write-Host '[PASS] Removed the project-created login shortcut.'
+            }
+        }
+        elseif ($startup.Exists) {
+            Write-Warning 'Startup shortcut changed after setup; it was preserved.'
+        }
+        else {
+            $state.startupShortcutCreated = $false
+        }
+    }
+
+    if ($RestoreTailscaleMode -and $state.tailscaleModeChanged) {
+        $tailscale = Get-MeshClipTrustedCommand -Name tailscale
+        if ($tailscale -and $PSCmdlet.ShouldProcess('Tailscale', 'Disable Run Unattended without resetting other preferences')) {
+            Invoke-MeshClipExternal -FilePath $tailscale -ArgumentList @('set', '--unattended=false') | Out-Null
+            $state.tailscaleModeChanged = $false
+            Write-Host '[PASS] Restored the previous unattended-mode intent.'
+        }
+    }
+
+    if (-not $WhatIfPreference) {
+        Save-MeshClipState -State $state
+    }
+}
+finally {
+    Exit-MeshClipOperationLock -Lock $lock
+}

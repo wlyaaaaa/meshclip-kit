@@ -1,0 +1,30 @@
+# Local machine configuration and diagnostics
+config/*.local.json
+diagnostics/
+logs/
+reports/
+backups/
+state*.json
+*.log
+.env
+.env.*
+!.env.example
+
+# Device identity and cryptographic material
+*.pem
+*.key
+*.pfx
+*.p12
+*privateKey*
+certificate.pem
+
+# PowerShell and test artifacts
+TestResults/
+coverage.xml
+*.tmp
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
