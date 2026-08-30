@@ -1232,7 +1232,7 @@ function Stop-MeshClipWatchdogProcesses {
 }
 
 function Write-MeshClipWatchdogStatus {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
     param(
         [Parameter(Mandatory)]
         [ValidateSet('Starting', 'Healthy', 'Restarted', 'StartFailed', 'StartSkipped', 'Error')]
@@ -1243,6 +1243,10 @@ function Write-MeshClipWatchdogStatus {
     )
 
     $paths = Get-MeshClipPaths
+    if (-not $PSCmdlet.ShouldProcess($paths.WatchdogStatusPath, "Write watchdog status '$Status'")) {
+        return
+    }
+
     [IO.Directory]::CreateDirectory($paths.StateRoot) | Out-Null
     $tempPath = Join-Path $paths.StateRoot "watchdog-status.$PID.tmp"
     $payload = [ordered]@{

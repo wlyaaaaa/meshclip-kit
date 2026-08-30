@@ -332,6 +332,41 @@ Describe 'Watchdog heartbeat timestamp parsing' {
     }
 }
 
+Describe 'Watchdog heartbeat writes' {
+    BeforeEach {
+        $script:originalLocalAppData = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = $TestDrive
+    }
+
+    AfterEach {
+        $env:LOCALAPPDATA = $script:originalLocalAppData
+    }
+
+    It 'does not write a status file during a WhatIf preview' {
+        function Invoke-MeshClipWatchdogStatusPreview {
+            [CmdletBinding(SupportsShouldProcess = $true)]
+            param()
+
+            Write-MeshClipWatchdogStatus -Status Starting -WhatIf:$WhatIfPreference
+        }
+
+        Invoke-MeshClipWatchdogStatusPreview -WhatIf
+
+        Test-Path -LiteralPath (Join-Path $TestDrive 'MeshClipKit\watchdog-status.json') |
+            Should -BeFalse
+    }
+
+    It 'still writes a status file during normal operation' {
+        Write-MeshClipWatchdogStatus -Status Healthy -RestartCount 2
+
+        $statusPath = Join-Path $TestDrive 'MeshClipKit\watchdog-status.json'
+        Test-Path -LiteralPath $statusPath | Should -BeTrue
+        $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+        $status.status | Should -Be 'Healthy'
+        $status.restartCount | Should -Be 2
+    }
+}
+
 Describe 'Watchdog supervisor task contract' {
     BeforeEach {
         $script:wrapperPath = 'C:\MeshClip\scripts\watch-kdeconnect-hidden.vbs'
