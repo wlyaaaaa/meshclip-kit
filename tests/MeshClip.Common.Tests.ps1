@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+﻿#Requires -Version 7.0
 
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '..\scripts\MeshClip.Common.psm1') -Force
@@ -13,6 +13,136 @@ Describe 'Address redaction' {
     It 'redacts invalid input completely' {
         ConvertTo-MeshClipRedactedAddress -Address 'not-an-address' |
             Should -Be '<redacted>'
+    }
+}
+
+Describe 'KDE device counts' {
+    BeforeAll {
+        # Exercise the real stdout/stderr and exit-code handling through a native child.
+        $fixture = @'
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+if ($args.Count -ne 2 -or $args[1] -ne '--id-only') { exit 64 }
+$responses = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'responses.json') -Raw | ConvertFrom-Json -AsHashtable
+$response = $responses[$args[0]]
+foreach ($line in $response.Stdout) { [Console]::Out.WriteLine($line) }
+foreach ($line in $response.Stderr) { [Console]::Error.WriteLine($line) }
+exit $response.ExitCode
+'@
+        [IO.File]::WriteAllText((Join-Path $TestDrive 'kdeconnect-cli.ps1'), $fixture)
+        $pwsh = (Get-Process -Id $PID).Path
+        $wrapper = '@echo off{0}"{1}" -NoProfile -NonInteractive -File "%~dp0kdeconnect-cli.ps1" %*{0}' -f [Environment]::NewLine, $pwsh
+        [IO.File]::WriteAllText((Join-Path $TestDrive 'kdeconnect-cli.cmd'), $wrapper)
+
+        function Invoke-FakeKdeSummary {
+            $script:cliResponses | ConvertTo-Json -Depth 5 |
+                Set-Content -LiteralPath (Join-Path $TestDrive 'responses.json') -Encoding utf8
+            Get-MeshClipKdeDeviceSummary
+        }
+    }
+
+    BeforeEach {
+        $script:cliResponses = @{
+            '--list-devices' = @{ Stdout = @(); Stderr = @(); ExitCode = 0 }
+            '--list-available' = @{ Stdout = @(); Stderr = @(); ExitCode = 0 }
+        }
+        Mock Get-MeshClipKdeExecutable -ModuleName MeshClip.Common {
+            Join-Path $TestDrive 'kdeconnect-cli.cmd'
+        }
+    }
+
+    It 'does not count the localized zero-device summary: <Summary>' -ForEach @(
+        @{ Summary = '找到 0 个设备' }
+        @{ Summary = '0 devices found' }
+        @{ Summary = 'No devices found' }
+        @{ Summary = '0 Geräte gefunden' }
+        @{ Summary = 'デバイスが見つかりませんでした' }
+    ) {
+        $script:cliResponses['--list-devices'].Stderr = @($Summary)
+        $script:cliResponses['--list-available'].Stderr = @($Summary)
+
+        $result = Invoke-FakeKdeSummary
+
+        $result.Status | Should -Be 'Available'
+        $result.Known | Should -Be 0
+        $result.Available | Should -Be 0
+    }
+
+    It 'counts protocol-valid stdout IDs without counting summaries or stderr noise' {
+        $ids = @(
+            '0123456789abcdef0123456789abcdef'
+            '01234567-89ab-cdef-0123-456789abcdef'
+            ('G_' * 19)
+        )
+        $script:cliResponses['--list-devices'].Stdout = $ids
+        $script:cliResponses['--list-devices'].Stderr = @(
+            '3 devices found',
+            'qt.network: diagnostic message',
+            ('n' * 32)
+        )
+        $script:cliResponses['--list-available'].Stdout = @($ids[2])
+        $script:cliResponses['--list-available'].Stderr = @('1 device found')
+
+        $result = Invoke-FakeKdeSummary
+
+        $result.Status | Should -Be 'Available'
+        $result.Known | Should -Be 3
+        $result.Available | Should -Be 1
+    }
+
+    It 'accepts successful empty output as zero devices' {
+        $result = Invoke-FakeKdeSummary
+
+        $result.Status | Should -Be 'Available'
+        $result.Known | Should -Be 0
+        $result.Available | Should -Be 0
+    }
+
+    It 'keeps malformed stdout unknown: <Output>' -ForEach @(
+        @{ Output = 'Unexpected CLI response' }
+        @{ Output = '0123456789abcdef' }
+        @{ Output = ('a' * 39) }
+    ) {
+        $script:cliResponses['--list-devices'].Stdout = @($Output)
+
+        $result = Invoke-FakeKdeSummary
+
+        $result.Status | Should -Be 'Unknown'
+        $result.Known | Should -BeNullOrEmpty
+        $result.Available | Should -BeNullOrEmpty
+    }
+
+    It 'keeps a failed <Mode> query unknown even when it emits an ID' -ForEach @(
+        @{ Mode = '--list-devices' }
+        @{ Mode = '--list-available' }
+    ) {
+        $script:cliResponses[$Mode].Stdout = @('0123456789abcdef0123456789abcdef')
+        $script:cliResponses[$Mode].Stderr = @('error: daemon unavailable')
+        $script:cliResponses[$Mode].ExitCode = 1
+
+        $result = Invoke-FakeKdeSummary
+
+        $result.Status | Should -Be 'Unknown'
+        $result.Known | Should -BeNullOrEmpty
+        $result.Available | Should -BeNullOrEmpty
+    }
+
+    It 'keeps a command launch failure unknown' {
+        Mock Get-MeshClipKdeExecutable -ModuleName MeshClip.Common {
+            Join-Path $TestDrive 'missing-cli.exe'
+        }
+
+        $result = Get-MeshClipKdeDeviceSummary
+
+        $result.Status | Should -Be 'Unknown'
+        $result.Known | Should -BeNullOrEmpty
+        $result.Available | Should -BeNullOrEmpty
+    }
+
+    It 'preserves the missing CLI status' {
+        Mock Get-MeshClipKdeExecutable -ModuleName MeshClip.Common { $null }
+
+        (Get-MeshClipKdeDeviceSummary).Status | Should -Be 'Missing'
     }
 }
 

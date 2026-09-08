@@ -1701,6 +1701,40 @@ function Enable-MeshClipDisabledUnmanagedKdeFirewallRules {
     }
 }
 
+function Get-MeshClipKdeDeviceCount {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $Cli,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('--list-devices', '--list-available')]
+        [string] $ListOption
+    )
+
+    # KDE writes localized counts and diagnostics to stderr, even with --id-only.
+    # Keep stdout separate; dbusinterfaces/dbushelpers.h exits nonzero on query failure.
+    $output = @(& $Cli $ListOption --id-only 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'KDE Connect device query failed; raw output was suppressed.'
+    }
+
+    $count = 0
+    foreach ($line in $output) {
+        $id = ([string]$line).Trim()
+        if (-not $id) {
+            continue
+        }
+        # DeviceInfo::isValidDeviceId accepts more than 32 hexadecimal characters:
+        # https://github.com/KDE/kdeconnect-kde/blob/v26.04.2/core/deviceinfo.h
+        if ($id -cnotmatch '\A[a-zA-Z0-9_-]{32,38}\z') {
+            throw 'KDE Connect returned unexpected device output; raw output was suppressed.'
+        }
+        $count++
+    }
+    return $count
+}
+
 function Get-MeshClipKdeDeviceSummary {
     [CmdletBinding()]
     param()
@@ -1710,16 +1744,16 @@ function Get-MeshClipKdeDeviceSummary {
         return [pscustomobject]@{ Known = 0; Available = 0; Status = 'Missing' }
     }
     try {
-        $known = Invoke-MeshClipExternal -FilePath $cli -ArgumentList @('--list-devices', '--id-only')
-        $available = Invoke-MeshClipExternal -FilePath $cli -ArgumentList @('--list-available', '--id-only')
+        $known = Get-MeshClipKdeDeviceCount -Cli $cli -ListOption '--list-devices'
+        $available = Get-MeshClipKdeDeviceCount -Cli $cli -ListOption '--list-available'
         [pscustomobject]@{
-            Known     = @($known.Output | Where-Object { $_.Trim() }).Count
-            Available = @($available.Output | Where-Object { $_.Trim() }).Count
+            Known     = $known
+            Available = $available
             Status    = 'Available'
         }
     }
     catch {
-        [pscustomobject]@{ Known = 0; Available = 0; Status = 'Unknown' }
+        [pscustomobject]@{ Known = $null; Available = $null; Status = 'Unknown' }
     }
 }
 

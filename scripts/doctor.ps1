@@ -265,7 +265,7 @@ if ($deviceSummary.Status -eq 'Available' -and $deviceSummary.Available -gt 0) {
     Add-Check 'KDE peer availability' 'WARN' 'A KDE Connect device is visible. Manually confirm the same pairing identity on both computers.'
 }
 elseif ($deviceSummary.Status -eq 'Available') {
-    Add-Check 'KDE peer availability' 'WARN' 'No KDE Connect device is currently available or paired.'
+    Add-Check 'KDE peer availability' 'WARN' 'No paired and reachable KDE Connect device is currently available.'
 }
 else {
     Add-Check 'KDE peer availability' 'UNKNOWN' 'KDE Connect CLI status could not be read.'
