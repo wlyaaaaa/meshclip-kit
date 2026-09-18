@@ -1,154 +1,106 @@
 #Requires -Version 7.0
-
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
-param(
-    [string] $Peer,
-    [switch] $DisableBroadKdeFirewallRules,
-    [switch] $SkipFirewall
-)
-
+param([string]$Peer, [switch]$DisableBroadKdeFirewallRules, [switch]$SkipFirewall)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'MeshClip.Common.psm1') -Force
-
-if (-not $IsWindows) {
-    throw 'MeshClip Kit peer configuration can only run on Windows.'
-}
-if ($SkipFirewall -and $DisableBroadKdeFirewallRules) {
-    throw '-DisableBroadKdeFirewallRules cannot be combined with -SkipFirewall.'
-}
-if (-not $SkipFirewall -and -not (Test-MeshClipAdministrator)) {
-    throw 'Open PowerShell 7 as Administrator before configuring a peer, or use -SkipFirewall for a config-only preview.'
-}
-
+if (-not $IsWindows) { throw 'Windows is required.' }
+if ([Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) { throw 'Use the intended Windows user, not SYSTEM.' }
+if ($SkipFirewall -and $DisableBroadKdeFirewallRules) { throw 'The firewall options conflict.' }
 $lock = Enter-MeshClipOperationLock
 try {
+    $state = Get-MeshClipState
+    Assert-MeshClipNoPendingTransaction -State $state
     $status = Get-MeshClipTailscaleStatus
-    if ($status.BackendState -ne 'Running' -or -not $status.SelfOnline) {
-        throw 'Tailscale must be authenticated and online before peer configuration.'
-    }
+    if ($status.BackendState -ne 'Running' -or -not $status.SelfOnline) { throw 'Tailscale must be online.' }
     $selected = Resolve-MeshClipApprovedWindowsPeer -Status $status -Peer $Peer
-    $redactedAddress = ConvertTo-MeshClipRedactedAddress -Address $selected.Address
-    Write-Host "Selected exactly one online Windows Tailnet peer at $redactedAddress. Full identity is intentionally not printed."
-
-    $firewallAudit = $null
-    $doDisableBroad = $false
+    $redacted = ConvertTo-MeshClipRedactedAddress -Address $selected.Address
+    $audit = $null
     if (-not $SkipFirewall) {
-        $firewallAudit = Get-MeshClipKdeFirewallAudit -Address $selected.Address
-        if ($firewallAudit.Status -ne 'Available') {
-            throw 'The unmanaged KDE firewall audit is unavailable; refusing to configure firewall access.'
-        }
-        if ($firewallAudit.BroadInboundAllow -gt 0) {
-            if (-not $DisableBroadKdeFirewallRules) {
-                throw 'Broad unmanaged KDE Connect inbound firewall rules exist. Review the -WhatIf plan, then rerun with -DisableBroadKdeFirewallRules.'
-            }
-            $doDisableBroad = $PSCmdlet.ShouldProcess(
-                'Windows Firewall',
-                'Disable only broad unmanaged inbound KDE Connect rules and record them for optional rollback'
-            )
-            if (-not $doDisableBroad -and -not $WhatIfPreference) {
-                throw 'Broad unmanaged KDE Connect rules remain enabled; peer configuration was stopped.'
-            }
-        }
+        if (-not $WhatIfPreference -and -not (Test-MeshClipAdministrator)) { throw 'Firewall changes require elevation for the same Windows user.' }
+        $audit = Get-MeshClipKdeFirewallAudit -Address $selected.Address
+        if ($audit.Status -ne 'Available') { throw 'The effective firewall policy could not be audited.' }
+        if ($audit.BroadInboundAllow -gt 0 -and -not $DisableBroadKdeFirewallRules) { throw 'Broad unmanaged KDE rules exist. Review -WhatIf, then explicitly use -DisableBroadKdeFirewallRules.' }
     }
-
-    $doConfig = $PSCmdlet.ShouldProcess('KDE Connect customDevices', "Add approved peer $redactedAddress")
-    $doFirewall = -not $SkipFirewall -and $PSCmdlet.ShouldProcess(
-        'Windows Firewall',
-        "Create exact-peer KDE Connect TCP/UDP rules for $redactedAddress"
-    )
-    $cli = Get-MeshClipKdeExecutable -Kind cli
-    $doRefresh = [bool]($cli -and $PSCmdlet.ShouldProcess('KDE Connect', 'Refresh device discovery'))
-
-    $stateBefore = Get-MeshClipState
-    $state = $stateBefore | ConvertTo-Json -Depth 20 | ConvertFrom-Json -Depth 20
-    $configResult = $null
-    $firewallResult = $null
-    $disabledNames = @()
-    $transactionStarted = -not $WhatIfPreference -and ($doDisableBroad -or $doConfig -or $doFirewall)
-
-    if ($transactionStarted) {
-        $state.pendingTransaction = [pscustomobject]@{
-            operation = 'configure-peer'
-            phase     = 'started'
-            startedAt = [DateTimeOffset]::UtcNow.ToString('O')
-        }
-        Save-MeshClipState -State $state
-    }
-
     try {
-        if ($doDisableBroad) {
-            $disabledNames = @(Disable-MeshClipBroadKdeFirewallRules -Address $selected.Address)
-            $state.disabledBroadFirewallRules = @(
-                $state.disabledBroadFirewallRules + $disabledNames | Select-Object -Unique
-            )
-            Write-Host '[PASS] Broad unmanaged KDE Connect inbound rules were disabled and recorded for optional rollback.'
-        }
-
-        if ($doConfig) {
-            $configResult = Write-MeshClipKdeConfigChange -Action Add -Address $selected.Address
-            if ($configResult.Changed) {
-                $state.addedPeers = @($state.addedPeers + $selected.Address | Select-Object -Unique)
-                Write-Host '[PASS] Added the peer to KDE Connect customDevices; only the config file was backed up.'
+        if ($audit -and $audit.BroadInboundAllow -gt 0) {
+            if (-not $PSCmdlet.ShouldProcess('Only the identified unmanaged KDE firewall rules', 'Disable broad inbound access with recorded preimages')) {
+                if (-not $WhatIfPreference) { throw 'Broad inbound access remains; configuration was not applied.' }
             }
             else {
-                Write-Host '[PASS] KDE Connect customDevices already contains this peer.'
+                if (-not $state.pendingTransaction) { Start-MeshClipTransaction -State $state -Operation 'configure-peer' }
+                # Keep each preimage, not merely an in-memory list returned AFTER
+                # all changes. This also covers interruption inside the helper.
+                $disableSteps = @(
+                    foreach ($name in @($audit.BroadRuleNames)) {
+                        $rule = Get-NetFirewallRule -Name $name -PolicyStore PersistentStore -ErrorAction Stop
+                        $snapshot = Get-MeshClipFirewallSnapshot -Rule $rule
+                        if ($snapshot.enabled -ne 'True') { throw 'A firewall rule changed after planning.' }
+                        Add-MeshClipTransactionStep -State $state -Kind FirewallDisable -Data $snapshot
+                    }
+                )
+                foreach ($step in $disableSteps) {
+                    # Mutate only the previously journaled rules, never a fresh wider audit set.
+                    $rule = Get-NetFirewallRule -Name $step.data.name -PolicyStore PersistentStore -ErrorAction Stop
+                    $current = Get-MeshClipFirewallSnapshot -Rule $rule
+                    if ($current.shape -cne $step.data.shape -or $current.enabled -ne 'True') { throw 'A firewall rule changed after its preimage was saved.' }
+                    $rule | Disable-NetFirewallRule -ErrorAction Stop
+                    $readback = Get-NetFirewallRule -Name $step.data.name -PolicyStore PersistentStore -ErrorAction Stop
+                    if ([string]$readback.Enabled -ne 'False') { throw 'Firewall disable did not verify.' }
+                    $state.disabledBroadFirewallRules = @($state.disabledBroadFirewallRules + $step.data.name | Select-Object -Unique)
+                    Complete-MeshClipTransactionStep -State $state -Step $step
+                }
             }
         }
-
-        if ($doFirewall) {
-            $firewallResult = New-MeshClipFirewallRules -Address $selected.Address
-            $state.firewallRules = @($state.firewallRules + $firewallResult.Names | Select-Object -Unique)
-            Write-Host '[PASS] Exact-peer KDE Connect firewall rules are present.'
-        }
-        elseif ($SkipFirewall) {
-            Write-Warning 'Firewall configuration was skipped. This device is not fully configured.'
-        }
-
-        if ($doRefresh) {
-            try {
-                Invoke-MeshClipExternal -FilePath $cli -ArgumentList @('--refresh') | Out-Null
-            }
-            catch {
-                Write-Warning 'KDE Connect refresh could not be confirmed. Restart the indicator manually.'
+        if ($PSCmdlet.ShouldProcess('KDE Connect customDevices', "Add approved peer $redacted")) {
+            $plan = New-MeshClipConfigPlan -Action Add -Address $selected.Address
+            if ($plan.Changed) {
+                if (-not $state.pendingTransaction) { Start-MeshClipTransaction -State $state -Operation 'configure-peer' }
+                $step = Add-MeshClipTransactionStep -State $state -Kind KdeConfig -Data $plan
+                Set-MeshClipConfigPlan -Plan $plan | Out-Null
+                $state.addedPeers = @($state.addedPeers + $selected.Address | Select-Object -Unique)
+                Complete-MeshClipTransactionStep -State $state -Step $step
             }
         }
-
-        if ($transactionStarted) {
-            $state.pendingTransaction = $null
-            Save-MeshClipState -State $state
+        if (-not $SkipFirewall -and $PSCmdlet.ShouldProcess('Windows Firewall', "Create exact-peer rules for $redacted")) {
+            $names = @(Get-MeshClipFirewallRuleNames -Address $selected.Address)
+            $allRules = @(Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop)
+            $missing = @($names | Where-Object { $_ -notin @($allRules.DisplayName) })
+            $step = $null
+            if ($missing.Count) {
+                if (-not $state.pendingTransaction) { Start-MeshClipTransaction -State $state -Operation 'configure-peer' }
+                $step = Add-MeshClipTransactionStep -State $state -Kind FirewallCreate -Data @{ names = $missing; ruleNames = $missing; address = $selected.Address }
+            }
+            $result = New-MeshClipFirewallRules -Address $selected.Address
+            $daemon = Get-MeshClipKdeExecutable -Kind daemon
+            $adapter = Get-MeshClipTailscaleAdapterAlias
+            $effective = @(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop)
+            for ($i = 0; $i -lt $names.Count; $i++) {
+                $rules = @($effective | Where-Object DisplayName -eq $names[$i])
+                $protocol = @('TCP','UDP')[$i]
+                if ($rules.Count -ne 1 -or -not (Test-MeshClipFirewallRuleCompliant -Rule $rules[0] -Protocol $protocol -Address $selected.Address -Program $daemon -InterfaceAlias $adapter)) { throw 'Exact-peer rules did not verify in ActiveStore.' }
+            }
+            if ($step) {
+                $state.firewallRules = @($state.firewallRules + $result.CreatedNames | Select-Object -Unique)
+                Complete-MeshClipTransactionStep -State $state -Step $step
+            }
         }
+        Complete-MeshClipTransaction -State $state
     }
     catch {
-        $originalError = $_
-        $rollbackErrors = [Collections.Generic.List[string]]::new()
-        if ($firewallResult -and @($firewallResult.CreatedNames).Count -gt 0) {
-            try { Remove-MeshClipFirewallRules -Names @($firewallResult.CreatedNames) }
-            catch { $rollbackErrors.Add('new firewall rules') }
+        $cause = $_
+        if ($state.pendingTransaction) {
+            $recovery = Repair-MeshClipTransaction -State $state
+            if ($recovery.status -ne 'recovered') { throw 'Peer configuration failed; incomplete recovery is still recorded. Run recover.ps1.' }
         }
-        if ($configResult -and $configResult.Changed) {
-            try { Restore-MeshClipKdeConfigChange -Change $configResult }
-            catch { $rollbackErrors.Add('KDE Connect config') }
-        }
-        if (@($disabledNames).Count -gt 0) {
-            try { Enable-MeshClipDisabledUnmanagedKdeFirewallRules -Names $disabledNames }
-            catch { $rollbackErrors.Add('disabled unmanaged firewall rules') }
-        }
-        if ($transactionStarted) {
-            try { Save-MeshClipState -State $stateBefore }
-            catch { $rollbackErrors.Add('local transaction state') }
-        }
-        if ($rollbackErrors.Count -gt 0) {
-            throw "Peer configuration failed and rollback was incomplete for: $($rollbackErrors -join ', '). Run doctor.ps1 before making more changes."
-        }
-        throw $originalError
+        throw $cause
     }
-
-    Write-Host ''
-    Write-Host 'User action required: confirm the same KDE Connect pairing request on both computers.'
-    Write-Host 'After pairing, disable the peer Clipboard option "Including passwords" on both computers.'
-    Write-Host 'Repeat configure-peer.ps1 on the other computer so both inbound firewalls approve the exact opposite peer.'
+    if ($SkipFirewall) { Write-Warning 'Config-only operation; firewall acceptance is not complete.' }
+    $cli = Get-MeshClipKdeExecutable -Kind cli
+    if ($cli -and $PSCmdlet.ShouldProcess('KDE Connect', 'Refresh discovery after committed configuration')) {
+        try { Invoke-MeshClipExternal -FilePath $cli -ArgumentList @('--refresh') | Out-Null }
+        catch { Write-Warning 'Configuration committed; discovery refresh could not be verified.' }
+    }
+    Write-Host 'Confirm the same pairing request on both devices. Disable Including passwords on both peers. Run acceptance.ps1; configuration is not end-to-end acceptance.'
 }
-finally {
-    Exit-MeshClipOperationLock -Lock $lock
-}
+finally { Exit-MeshClipOperationLock -Lock $lock }

@@ -102,3 +102,7 @@ must have a fresh heartbeat.
 - End the hidden watchdog once and verify that the supervisor restores exactly
   one watchdog within about two minutes.
 - Lock the logged-in session and record observed behavior.
+
+## Recovery and visible control
+
+See [Recovery and control](RECOVERY-AND-CONTROL.md) for interrupted operations, pause/resume, strict diagnostic result meanings and the synthetic two-device acceptance guide. An already running watchdog must restart to load changed source. Pausing affects automatic recovery only; it does not remove ordinary KDE login startup or stop an existing indicator.

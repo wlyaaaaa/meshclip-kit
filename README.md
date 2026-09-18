@@ -1,5 +1,9 @@
 # MeshClip Kit
 
+Current reliability and control features: durable interrupted-operation recovery, pause/resume control center, strict layered diagnosis and synthetic two-device acceptance guide. Start with [Recovery and control](docs/RECOVERY-AND-CONTROL.md).
+
+Double-click `MeshClip控制中心.vbs` for the current-user control center. Configuration and test results do not prove real clipboard/file transfer.
+
 MeshClip Kit configures **Tailscale + KDE Connect** for clipboard sharing and
 file transfer between Windows computers that are not on the same LAN.
 
@@ -154,3 +158,13 @@ pwsh -File .\scripts\uninstall.ps1 -Apply -RestoreDisabledBroadKdeFirewallRules
 - [Android P1 boundary](docs/ANDROID.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+## Control and recovery
+
+Double-click `MeshClip控制中心.vbs`, or run `pwsh -NoProfile -STA -File .\scripts\control-center.ps1`. The window shows watchdog intent, heartbeat and pending recovery. Pause for one hour or until resumed without closing KDE Connect. Closing the window does not stop the supervisor; intent changes are observed at the next watchdog check.
+
+Installation and peer configuration persist typed recovery steps before effects. An interrupted or failed rollback remains pending and cannot be overwritten by another setup. `pwsh -File .\scripts\recover.ps1` previews the record; add `-Apply` to recover only unchanged resources. Foreign changes are preserved. Installed vendor packages are retained after integration failure.
+
+Use `doctor.ps1 -Summary -StrictAcceptance` for structured strict configuration diagnostics. Unknown/warning and noninteractive results are not complete desktop acceptance. The original `-AsJson` check-list output remains available.
+
+`acceptance.ps1` supplies 100 synthetic clipboard markers, bounded generated files, received-copy checksum checks, explicit operator observations and safe cleanup. It never reads clipboard history or infers remote transfer from a local copy. See [Windows deployment](docs/WINDOWS.md) for current commands and limits.

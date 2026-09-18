@@ -20,7 +20,7 @@ if (-not $IsWindows) {
 }
 
 $mutex = [Threading.Mutex]::new($false, 'Local\MeshClipKit-KdeConnect-Watchdog')
-if (-not $mutex.WaitOne(0)) {
+try { $acquired = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $acquired = $true }; if (-not $acquired) {
     $mutex.Dispose()
     return
 }
@@ -28,16 +28,22 @@ if (-not $mutex.WaitOne(0)) {
 $restartCount = 0
 $sessionId = (Get-Process -Id $PID).SessionId
 try {
-    Write-MeshClipWatchdogStatus -Status Starting -RestartCount $restartCount -WhatIf:$WhatIfPreference
+    Write-MeshClipWatchdogStatus -Status Starting -RestartCount $restartCount -IntervalSeconds $IntervalSeconds -WhatIf:$WhatIfPreference
     if ($InitialDelaySeconds -gt 0) {
         Start-Sleep -Seconds $InitialDelaySeconds
     }
 
     do {
         try {
+            $control = Get-MeshClipWatchdogControl
+            if ($control.paused) {
+                Write-MeshClipWatchdogStatus -Status Paused -RestartCount $restartCount -IntervalSeconds $IntervalSeconds -WhatIf:$WhatIfPreference
+                if (-not $RunOnce) { Start-Sleep -Seconds $IntervalSeconds }
+                continue
+            }
             $indicator = Get-MeshClipKdeExecutable -Kind indicator
             if (-not $indicator) {
-                Write-MeshClipWatchdogStatus -Status StartFailed -RestartCount $restartCount -WhatIf:$WhatIfPreference
+                Write-MeshClipWatchdogStatus -Status StartFailed -RestartCount $restartCount -IntervalSeconds $IntervalSeconds -WhatIf:$WhatIfPreference
             }
             else {
                 $running = @(Get-Process -Name kdeconnect-indicator -ErrorAction SilentlyContinue | Where-Object {
@@ -51,24 +57,24 @@ try {
                             $_.SessionId -eq $sessionId
                         })
                         if ($running.Count -eq 0) {
-                            Write-MeshClipWatchdogStatus -Status StartFailed -RestartCount $restartCount -WhatIf:$WhatIfPreference
+                            Write-MeshClipWatchdogStatus -Status StartFailed -RestartCount $restartCount -IntervalSeconds $IntervalSeconds -WhatIf:$WhatIfPreference
                         }
                         else {
                             $restartCount++
-                            Write-MeshClipWatchdogStatus -Status Restarted -RestartCount $restartCount -WhatIf:$WhatIfPreference
+                            Write-MeshClipWatchdogStatus -Status Restarted -RestartCount $restartCount -IntervalSeconds $IntervalSeconds -WhatIf:$WhatIfPreference
                         }
                     }
                     else {
-                        Write-MeshClipWatchdogStatus -Status StartSkipped -RestartCount $restartCount -WhatIf:$WhatIfPreference
+                        Write-MeshClipWatchdogStatus -Status StartSkipped -RestartCount $restartCount -IntervalSeconds $IntervalSeconds -WhatIf:$WhatIfPreference
                     }
                 }
                 else {
-                    Write-MeshClipWatchdogStatus -Status Healthy -RestartCount $restartCount -WhatIf:$WhatIfPreference
+                    Write-MeshClipWatchdogStatus -Status Healthy -RestartCount $restartCount -IntervalSeconds $IntervalSeconds -WhatIf:$WhatIfPreference
                 }
             }
         }
         catch {
-            Write-MeshClipWatchdogStatus -Status Error -RestartCount $restartCount -WhatIf:$WhatIfPreference
+            Write-MeshClipWatchdogStatus -Status Error -RestartCount $restartCount -IntervalSeconds $IntervalSeconds -WhatIf:$WhatIfPreference
         }
 
         if (-not $RunOnce) {

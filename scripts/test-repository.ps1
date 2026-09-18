@@ -55,7 +55,7 @@ $configuration.TestResult.Enabled = $true
 $configuration.TestResult.OutputFormat = 'NUnitXml'
 $configuration.TestResult.OutputPath = Join-Path $resultDirectory 'pester.xml'
 $result = Invoke-Pester -Configuration $configuration
-if ($result.FailedCount -gt 0) {
+if ($result.Result -ne 'Passed' -or $result.TotalCount -eq 0 -or $result.FailedCount -gt 0 -or $result.NotRunCount -gt 0) {
     throw "$($result.FailedCount) Pester test(s) failed."
 }
 

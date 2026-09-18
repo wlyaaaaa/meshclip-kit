@@ -21,7 +21,7 @@ The Windows watchdog is a current-user, login-scoped recovery process. Its
 first launcher is `wscript.exe`, so background startup does not require a
 console window. It checks only whether the trusted KDE Connect indicator is
 running in the same interactive session. Its heartbeat contains only a schema,
-timestamp, bounded status, and restart count; it does not read clipboard data,
+timestamp, interval, bounded status, and restart count; it does not read clipboard data,
 device identity, addresses, Tailscale state, files, or firewall configuration.
 
 ## Pairing and firewall policy
@@ -80,3 +80,7 @@ Do not use real secrets for acceptance testing.
 
 Do not open a public issue containing secrets, device identifiers, or private
 logs. Send a minimal reproduction with all identities and addresses removed.
+
+## Interrupted integration and intentional pause
+
+Typed steps are persisted before effects. Pending recovery cannot be overwritten by new setup. Automatic recovery compares current values and preserves conflicts; partial recovery never clears its marker. State and preimages remain local and must not be posted publicly. The control center changes only watchdog intent, not pairing or network policy. Synthetic acceptance distinguishes checksums from operator observations and never certifies an unobserved transfer.

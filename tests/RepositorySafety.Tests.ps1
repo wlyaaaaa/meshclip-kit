@@ -56,7 +56,9 @@ Describe 'PowerShell source integrity' {
         $configure = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\configure-peer.ps1') -Raw
 
         $configure | Should -Match '\$DisableBroadKdeFirewallRules'
-        $configure | Should -Match 'Disable-MeshClipBroadKdeFirewallRules'
+        $configure | Should -Match 'Get-MeshClipFirewallSnapshot'
+        $configure | Should -Match 'Disable-NetFirewallRule'
+        $configure | Should -Match 'FirewallDisable'
         $configure | Should -Not -Match 'AllowOfflinePeer'
     }
 

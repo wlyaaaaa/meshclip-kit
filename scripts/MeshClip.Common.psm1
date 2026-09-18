@@ -50,7 +50,7 @@ function Enter-MeshClipOperationLock {
     $bytes = [Text.Encoding]::UTF8.GetBytes($sid)
     $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).Substring(0, 12)
     $mutex = [Threading.Mutex]::new($false, "Local\MeshClipKit-$hash")
-    if (-not $mutex.WaitOne(0)) {
+    try { $acquired = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $acquired = $true }; if (-not $acquired) {
         $mutex.Dispose()
         throw 'Another MeshClip Kit install, configure, or uninstall operation is running.'
     }
@@ -104,33 +104,36 @@ function Get-MeshClipTrustedCommand {
 
 function Invoke-MeshClipExternal {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string] $FilePath,
-
-        [Parameter()]
-        [string[]] $ArgumentList = @(),
-
-        [Parameter()]
-        [int[]] $AllowedExitCodes = @(0)
-    )
-
-    if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
-        throw "Trusted executable was not found: $FilePath"
+    param([Parameter(Mandatory)][string]$FilePath, [string[]]$ArgumentList=@(),
+        [int[]]$AllowedExitCodes=@(0), [ValidateRange(1,900)][int]$TimeoutSeconds=20)
+    if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) { throw 'Required executable not found.' }
+    $info=[Diagnostics.ProcessStartInfo]::new()
+    $info.UseShellExecute=$false; $info.CreateNoWindow=$true
+    $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
+    $info.StandardOutputEncoding=[Text.UTF8Encoding]::new($false)
+    $info.StandardErrorEncoding=[Text.UTF8Encoding]::new($false)
+    if ([IO.Path]::GetExtension($FilePath) -in @('.cmd','.bat')) {
+        # Compatibility for trusted test shims; never interpret arbitrary shell text.
+        if ($FilePath -match '[%&|<>^!\r\n]' -or @($ArgumentList | Where-Object { $_ -notmatch '\A[-A-Za-z0-9_./:=]+\z' }).Count) { throw 'Unsupported command-shim argument.' }
+        $info.FileName=$env:ComSpec
+        $info.Arguments='/d /s /c ""'+$FilePath+'" '+($ArgumentList -join ' ')+'"'
+    } else {
+        $info.FileName=$FilePath
+        foreach($argument in $ArgumentList){$info.ArgumentList.Add($argument)}
     }
-
-    $captured = @(& $FilePath @ArgumentList 2>&1)
-    $exitCode = $LASTEXITCODE
-    $output = @($captured | ForEach-Object { $_.ToString() })
-
-    if ($exitCode -notin $AllowedExitCodes) {
-        throw "External command failed with exit code $exitCode. Review the command locally; raw output was suppressed."
-    }
-
-    [pscustomobject]@{
-        ExitCode = $exitCode
-        Output   = $output
-    }
+    $process=[Diagnostics.Process]::new(); $process.StartInfo=$info
+    try {
+        if (-not $process.Start()) { throw 'Executable did not start.' }
+        $stdout=$process.StandardOutput.ReadToEndAsync(); $stderr=$process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds*1000)) {
+            try { $process.Kill($true); [void]$process.WaitForExit(3000) } catch {}
+            throw 'External command timed out; no raw output was disclosed.'
+        }
+        if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdout,$stderr),3000)) { throw 'External output streams did not close.' }
+        $code=$process.ExitCode
+        if ($code -notin $AllowedExitCodes) { throw "External command failed with exit code $code; raw output suppressed." }
+        [pscustomobject]@{ ExitCode=$code; Output=@($stdout.Result -split '\r?\n' | Where-Object { $_ -ne '' }); StandardError=$stderr.Result }
+    } finally { $process.Dispose() }
 }
 
 function Get-MeshClipKdeInstallRoot {
@@ -608,95 +611,10 @@ function Repair-MeshClipLegacyDuplicateGeneralLines {
 
 function Write-MeshClipKdeConfigChange {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [ValidateSet('Add', 'Remove')]
-        [string] $Action,
-
-        [Parameter(Mandatory)]
-        [string] $Address
-    )
-
-    $paths = Get-MeshClipPaths
-    $document = Read-MeshClipTextDocument -Path $paths.KdeConfigPath
-    $sourceLines = @($document.Lines)
-    $legacyRepair = $null
-    if ($Action -eq 'Add') {
-        $legacyRepair = Repair-MeshClipLegacyDuplicateGeneralLines -Lines $sourceLines -Address $Address
-        if ($legacyRepair.Changed) {
-            $sourceLines = @($legacyRepair.Lines)
-        }
-    }
-    $result = if ($Action -eq 'Add') {
-        Add-MeshClipCustomDeviceToLines -Lines $sourceLines -Address $Address
-    }
-    else {
-        Remove-MeshClipCustomDeviceFromLines -Lines $sourceLines -Address $Address
-    }
-    if ($legacyRepair -and $legacyRepair.Changed -and -not $result.Changed) {
-        $result = [pscustomobject]@{
-            Changed = $true
-            Lines   = $result.Lines
-            Devices = $result.Devices
-        }
-    }
-    if (-not $result.Changed) {
-        return [pscustomobject]@{
-            Changed        = $false
-            BackupPath     = $null
-            Devices        = $result.Devices
-            OriginalExists = $document.Exists
-            OriginalHash   = $document.Hash
-            ResultHash     = $document.Hash
-        }
-    }
-
-    $configDirectory = Split-Path -Parent $paths.KdeConfigPath
-    [IO.Directory]::CreateDirectory($configDirectory) | Out-Null
-    [IO.Directory]::CreateDirectory($paths.BackupsRoot) | Out-Null
-
-    if ($document.Exists) {
-        $currentHash = Get-MeshClipFileHashSafe -Path $paths.KdeConfigPath
-        if ($currentHash -ne $document.Hash) {
-            throw 'KDE Connect config changed while it was being prepared. No write was made.'
-        }
-    }
-    elseif (Test-Path -LiteralPath $paths.KdeConfigPath) {
-        throw 'KDE Connect config appeared while it was being prepared. No write was made.'
-    }
-
-    $backupPath = $null
-    if ($document.Exists) {
-        $stamp = Get-Date -Format 'yyyyMMdd-HHmmssfff'
-        $backupPath = Join-Path $paths.BackupsRoot "kdeconnect-config-$stamp.bak"
-        [IO.File]::Copy($paths.KdeConfigPath, $backupPath, $false)
-    }
-
-    $content = $result.Lines -join $document.NewLine
-    if ($document.EndsNewLine -or -not $document.Exists) {
-        $content += $document.NewLine
-    }
-    $tempPath = Join-Path $configDirectory "config.meshclip.$PID.tmp"
-    $encoding = [Text.UTF8Encoding]::new($document.HasBom)
-    try {
-        [IO.File]::WriteAllText($tempPath, $content, $encoding)
-        [void](Get-MeshClipCustomDevicesFromLines -Lines (Read-MeshClipTextDocument -Path $tempPath).Lines)
-        [IO.File]::Move($tempPath, $paths.KdeConfigPath, $true)
-    }
-    finally {
-        if (Test-Path -LiteralPath $tempPath) {
-            Remove-Item -LiteralPath $tempPath -Force
-        }
-    }
-
-    [pscustomobject]@{
-        Changed        = $true
-        BackupPath     = $backupPath
-        Devices        = $result.Devices
-        OriginalExists = $document.Exists
-        OriginalHash   = $document.Hash
-        ResultHash     = Get-MeshClipFileHashSafe -Path $paths.KdeConfigPath
-    }
+    param([Parameter(Mandatory)][ValidateSet('Add','Remove')][string]$Action,
+        [Parameter(Mandatory)][string]$Address)
+    $plan=New-MeshClipConfigPlan -Action $Action -Address $Address
+    Set-MeshClipConfigPlan -Plan $plan
 }
 
 function Restore-MeshClipKdeConfigChange {
@@ -706,6 +624,7 @@ function Restore-MeshClipKdeConfigChange {
         [pscustomobject] $Change
     )
 
+    if ($Change.PSObject.Properties['OriginalBytesBase64']) { Undo-MeshClipConfigPlan -Plan $Change; return }
     if (-not $Change.Changed) {
         return
     }
@@ -784,25 +703,8 @@ function Get-MeshClipState {
 
 function Save-MeshClipState {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [pscustomobject] $State
-    )
-
-    $paths = Get-MeshClipPaths
-    [IO.Directory]::CreateDirectory($paths.StateRoot) | Out-Null
-    $tempPath = Join-Path $paths.StateRoot "user-state.$PID.tmp"
-    try {
-        $json = $State | ConvertTo-Json -Depth 20
-        [IO.File]::WriteAllText($tempPath, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-        [void](Get-Content -Raw -LiteralPath $tempPath | ConvertFrom-Json -Depth 30)
-        [IO.File]::Move($tempPath, $paths.StatePath, $true)
-    }
-    finally {
-        if (Test-Path -LiteralPath $tempPath) {
-            Remove-Item -LiteralPath $tempPath -Force
-        }
-    }
+    param([Parameter(Mandatory)][pscustomobject]$State)
+    Write-MeshClipAtomicJson -Path (Get-MeshClipPaths).StatePath -Value $State
 }
 
 function Get-MeshClipStartupInfo {
@@ -1235,11 +1137,12 @@ function Write-MeshClipWatchdogStatus {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
     param(
         [Parameter(Mandatory)]
-        [ValidateSet('Starting', 'Healthy', 'Restarted', 'StartFailed', 'StartSkipped', 'Error')]
+        [ValidateSet('Starting', 'Healthy', 'Restarted', 'StartFailed', 'StartSkipped', 'Error', 'Paused')]
         [string] $Status,
 
         [ValidateRange(0, [int]::MaxValue)]
-        [int] $RestartCount = 0
+        [int] $RestartCount = 0,
+        [ValidateRange(10,3600)][int] $IntervalSeconds = 60
     )
 
     $paths = Get-MeshClipPaths
@@ -1252,6 +1155,8 @@ function Write-MeshClipWatchdogStatus {
     $payload = [ordered]@{
         schemaVersion = 1
         observedUtc   = [DateTimeOffset]::UtcNow.ToString('O')
+        nextCheckUtc = [DateTimeOffset]::UtcNow.AddSeconds($IntervalSeconds).ToString('O')
+        intervalSeconds = $IntervalSeconds
         status        = $Status
         restartCount  = $RestartCount
     }
@@ -1305,11 +1210,16 @@ function Get-MeshClipWatchdogStatus {
         }
         $observed = ConvertTo-MeshClipDateTimeOffset -Value $status.observedUtc
         $age = ([DateTimeOffset]::UtcNow - $observed).TotalSeconds
+        $interval = if ($status.PSObject.Properties['intervalSeconds']) { [int]$status.intervalSeconds } else { 60 }
+        if ($interval -lt 10 -or $interval -gt 3600) { throw 'invalid heartbeat interval' }
         [pscustomobject]@{
             Available    = $true
-            Fresh        = $age -ge -5 -and $age -le 180
+            Fresh        = $age -ge -5 -and $age -le (2 * $interval + 60)
             Status       = [string]$status.status
             RestartCount = [int]$status.restartCount
+            ObservedUtc = $observed.ToString('O')
+            NextCheckUtc = $observed.AddSeconds($interval).ToString('O')
+            IntervalSeconds = $interval
         }
     }
     catch {
@@ -1458,6 +1368,7 @@ function New-MeshClipFirewallRules {
             }
 
             New-NetFirewallRule `
+                -Name $names[$i] `
                 -DisplayName $names[$i] `
                 -Group $script:FirewallGroup `
                 -Description 'Created by MeshClip Kit for one approved Tailscale peer.' `
@@ -1703,36 +1614,17 @@ function Enable-MeshClipDisabledUnmanagedKdeFirewallRules {
 
 function Get-MeshClipKdeDeviceCount {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string] $Cli,
-
-        [Parameter(Mandatory)]
-        [ValidateSet('--list-devices', '--list-available')]
-        [string] $ListOption
-    )
-
-    # KDE writes localized counts and diagnostics to stderr, even with --id-only.
-    # Keep stdout separate; dbusinterfaces/dbushelpers.h exits nonzero on query failure.
-    $output = @(& $Cli $ListOption --id-only 2>$null)
-    if ($LASTEXITCODE -ne 0) {
-        throw 'KDE Connect device query failed; raw output was suppressed.'
+    param([Parameter(Mandatory)][string]$Cli,
+        [Parameter(Mandatory)][ValidateSet('--list-devices','--list-available')][string]$ListOption)
+    $result=Invoke-MeshClipExternal -FilePath $Cli -ArgumentList @($ListOption,'--id-only') -TimeoutSeconds 15
+    $ids=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach($line in @($result.Output)) {
+        $id=([string]$line).Trim()
+        if(-not $id){continue}
+        if($id -cnotmatch '\A[a-zA-Z0-9_-]{32,38}\z'){throw 'Unexpected KDE device output; raw output suppressed.'}
+        [void]$ids.Add($id)
     }
-
-    $count = 0
-    foreach ($line in $output) {
-        $id = ([string]$line).Trim()
-        if (-not $id) {
-            continue
-        }
-        # DeviceInfo::isValidDeviceId accepts more than 32 hexadecimal characters:
-        # https://github.com/KDE/kdeconnect-kde/blob/v26.04.2/core/deviceinfo.h
-        if ($id -cnotmatch '\A[a-zA-Z0-9_-]{32,38}\z') {
-            throw 'KDE Connect returned unexpected device output; raw output was suppressed.'
-        }
-        $count++
-    }
-    return $count
+    return $ids.Count
 }
 
 function Get-MeshClipKdeDeviceSummary {
@@ -1766,56 +1658,6 @@ function Test-MeshClipCloudClipboardEnabled {
     return [bool]($value -and $value.EnableCloudClipboard -eq 1)
 }
 
-Export-ModuleMember -Function @(
-    'Get-MeshClipPaths',
-    'Test-MeshClipAdministrator',
-    'Enter-MeshClipOperationLock',
-    'Exit-MeshClipOperationLock',
-    'Get-MeshClipTrustedCommand',
-    'Invoke-MeshClipExternal',
-    'Get-MeshClipKdeInstallRoot',
-    'Get-MeshClipKdeExecutable',
-    'Get-MeshClipTailscaleStatus',
-    'Get-MeshClipTailscalePreferences',
-    'Resolve-MeshClipPeer',
-    'Resolve-MeshClipApprovedWindowsPeer',
-    'ConvertTo-MeshClipRedactedAddress',
-    'Get-MeshClipFileHashSafe',
-    'Read-MeshClipTextDocument',
-    'Get-MeshClipCustomDevicesFromLines',
-    'Add-MeshClipCustomDeviceToLines',
-    'Remove-MeshClipCustomDeviceFromLines',
-    'Repair-MeshClipLegacyDuplicateGeneralLines',
-    'Write-MeshClipKdeConfigChange',
-    'Restore-MeshClipKdeConfigChange',
-    'Get-MeshClipState',
-    'Save-MeshClipState',
-    'Get-MeshClipStartupInfo',
-    'New-MeshClipStartupShortcut',
-    'ConvertTo-MeshClipSid',
-    'Test-MeshClipWatchdogCommandLine',
-    'Get-MeshClipWatchdogStartupInfo',
-    'New-MeshClipWatchdogStartupShortcut',
-    'Test-MeshClipWatchdogTaskContract',
-    'Get-MeshClipWatchdogTaskInfo',
-    'New-MeshClipWatchdogTask',
-    'Remove-MeshClipWatchdogTask',
-    'Get-MeshClipWatchdogProcessInfo',
-    'Start-MeshClipWatchdog',
-    'Stop-MeshClipWatchdogProcesses',
-    'Write-MeshClipWatchdogStatus',
-    'ConvertTo-MeshClipDateTimeOffset',
-    'Get-MeshClipWatchdogStatus',
-    'Get-MeshClipTailscaleAdapterAlias',
-    'Get-MeshClipFirewallRuleNames',
-    'Test-MeshClipExactStringSet',
-    'Test-MeshClipFirewallFilterContract',
-    'Test-MeshClipFirewallRuleCompliant',
-    'New-MeshClipFirewallRules',
-    'Remove-MeshClipFirewallRules',
-    'Get-MeshClipKdeFirewallAudit',
-    'Disable-MeshClipBroadKdeFirewallRules',
-    'Enable-MeshClipDisabledUnmanagedKdeFirewallRules',
-    'Get-MeshClipKdeDeviceSummary',
-    'Test-MeshClipCloudClipboardEnabled'
-)
+. (Join-Path $PSScriptRoot 'MeshClip.Transaction.ps1')
+
+Export-ModuleMember -Function '*-MeshClip*'

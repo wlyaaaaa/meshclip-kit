@@ -3,7 +3,9 @@
 [CmdletBinding()]
 param(
     [string] $Peer,
-    [switch] $AsJson
+    [switch] $AsJson,
+    [switch] $Summary,
+    [switch] $StrictAcceptance
 )
 
 Set-StrictMode -Version Latest
@@ -170,17 +172,10 @@ catch {
 
 $watchdogProcess = Get-MeshClipWatchdogProcessInfo
 $watchdogStatus = Get-MeshClipWatchdogStatus
-if ($watchdogProcess.Running -and $watchdogStatus.Available -and $watchdogStatus.Fresh -and
-    $watchdogStatus.Status -in @('Starting', 'Healthy', 'Restarted')) {
-    Add-Check 'KDE watchdog runtime' 'PASS' 'Exactly one silent current-session watchdog has a fresh healthy heartbeat.'
-}
-elseif ($watchdogStartup.Exists -and $watchdogStartup.OwnedAndUnchanged) {
-    Add-Check 'KDE watchdog runtime' 'FAIL' 'Watchdog startup is configured but its process or heartbeat is not healthy.'
-}
-else {
-    Add-Check 'KDE watchdog runtime' 'FAIL' 'The required project-owned watchdog runtime is not healthy.'
-}
-
+$watchdogControl = $null
+try { $watchdogControl = Get-MeshClipWatchdogControl } catch { }
+$watchdogCheck = Get-MeshClipWatchdogRuntimeCheck -ProcessInfo $watchdogProcess -Heartbeat $watchdogStatus -Control $watchdogControl
+Add-Check 'KDE watchdog runtime' $watchdogCheck.Status $watchdogCheck.Detail
 $paths = Get-MeshClipPaths
 try {
     $document = Read-MeshClipTextDocument -Path $paths.KdeConfigPath
@@ -211,7 +206,7 @@ if ($selected -and $daemon) {
         $protocols = @('TCP', 'UDP')
         $allCompliant = $true
         for ($i = 0; $i -lt $names.Count; $i++) {
-            $rules = @(Get-NetFirewallRule -DisplayName $names[$i] -ErrorAction SilentlyContinue)
+            $rules = @(Get-NetFirewallRule -DisplayName $names[$i] -PolicyStore ActiveStore -ErrorAction Stop)
             if ($rules.Count -ne 1 -or -not (Test-MeshClipFirewallRuleCompliant -Rule $rules[0] -Protocol $protocols[$i] -Address $selected.Address -Program $daemon -InterfaceAlias $adapter)) {
                 $allCompliant = $false
             }
@@ -279,7 +274,29 @@ else {
     Add-Check 'Windows cloud clipboard' 'PASS' 'Windows cloud clipboard is not detected as enabled.'
 }
 
-if ($AsJson) {
+try {
+    $profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop)
+    if ($profiles.Count -ne 3 -or @($profiles | Where-Object { -not $_.Enabled }).Count) {
+        Add-Check 'Effective firewall profiles' 'FAIL' 'All expected firewall profiles must be enabled.'
+    } else { Add-Check 'Effective firewall profiles' 'PASS' 'All expected effective firewall profiles are enabled.' }
+} catch { Add-Check 'Effective firewall profiles' 'UNKNOWN' 'Effective profiles could not be read.' }
+if ((Get-Process -Id $PID).SessionId -eq 0) {
+    Add-Check 'Diagnostic user session' 'UNKNOWN' 'This is a noninteractive session. Its process checks are not desktop-user acceptance.'
+}
+try {
+    $control = Get-MeshClipWatchdogControl
+    if ($control.paused) { Add-Check 'Watchdog intent' 'WARN' 'Automatic restart is deliberately paused. Existing KDE Connect is not stopped.' }
+} catch { Add-Check 'Watchdog intent' 'UNKNOWN' 'Watchdog control could not be read.' }
+$failed = @($checks | Where-Object Status -eq 'FAIL').Count
+$unknown = @($checks | Where-Object Status -eq 'UNKNOWN').Count
+$warnings = @($checks | Where-Object Status -eq 'WARN').Count
+$overall = if ($failed) { 'failed' } elseif ($unknown) { 'unknown' } elseif ($warnings) { 'needs_attention' } else { 'healthy' }
+if ($Summary) {
+    [pscustomobject]@{ schema = 'meshclip.health.v1'; status = $overall; observedUtc = [DateTimeOffset]::UtcNow.ToString('O')
+        context = @{ sessionId = (Get-Process -Id $PID).SessionId; systemAccount = [Security.Principal.WindowsIdentity]::GetCurrent().IsSystem }
+        checks = @($checks); business_acceptance = 'not_tested'; failed = $failed; unknown = $unknown; warnings = $warnings } | ConvertTo-Json -Depth 7
+}
+elseif ($AsJson) {
     $checks | ConvertTo-Json -Depth 5
 }
 else {
@@ -289,3 +306,5 @@ else {
 if (@($checks | Where-Object Status -eq 'FAIL').Count -gt 0) {
     exit 1
 }
+
+if ($StrictAcceptance -and ($unknown -gt 0 -or $warnings -gt 0)) { exit 2 }

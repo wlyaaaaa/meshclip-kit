@@ -1,255 +1,118 @@
 #Requires -Version 7.0
-
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
-param(
-    [switch] $SkipTailscaleUnattended,
-    [switch] $SkipKdeStartup,
-    [switch] $SkipKdeWatchdog,
-    [switch] $NoLaunchKdeConnect
-)
-
+param([switch]$SkipTailscaleUnattended, [switch]$SkipKdeStartup,
+    [switch]$SkipKdeWatchdog, [switch]$NoLaunchKdeConnect, [switch]$AsJson)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'MeshClip.Common.psm1') -Force
-
-if (-not $IsWindows) {
-    throw 'MeshClip Kit Windows setup can only run on Windows.'
-}
-if ([Environment]::OSVersion.Version.Build -lt 22000) {
-    throw 'The current MVP supports Windows 11 only.'
-}
+if (-not $IsWindows -or [Environment]::OSVersion.Version.Build -lt 22000) { throw 'MeshClip requires Windows 11.' }
+if ([Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) { throw 'Run setup as the intended signed-in Windows user, not SYSTEM.' }
 $lock = Enter-MeshClipOperationLock
+$notes = [Collections.Generic.List[string]]::new()
+$changed = 0
 try {
     $state = Get-MeshClipState
-    $stateChanged = $false
-    $unattendedEnabledThisRun = $false
-    $startupCreatedThisRun = $false
-    $watchdogShortcutCreatedThisRun = $false
-    $watchdogTaskCreatedThisRun = $false
-    $watchdogStartedThisRun = $false
-    $winget = Get-MeshClipTrustedCommand -Name winget
-    if (-not $winget) {
-        throw 'WinGet is required. Install or repair Windows App Installer first.'
+    Assert-MeshClipNoPendingTransaction -State $state
+    # Check conflicts before installing packages or changing preferences.
+    if (-not $SkipKdeStartup) {
+        $startup = Get-MeshClipStartupInfo
+        if ($startup.Exists -and -not $startup.Matches) { throw 'A different KDE login shortcut exists; it was preserved.' }
     }
-
+    if (-not $SkipKdeWatchdog) {
+        $watchdogStartup = Get-MeshClipWatchdogStartupInfo
+        if ($watchdogStartup.Exists -and -not $watchdogStartup.OwnedAndUnchanged) { throw 'A different watchdog startup shortcut exists; it was preserved.' }
+        $watchdogTask = Get-MeshClipWatchdogTaskInfo
+        if ($watchdogTask.Exists -and -not $watchdogTask.Compliant) { throw 'A different watchdog supervisor task exists; it was preserved.' }
+    }
     $packages = @(
-        [pscustomobject]@{
-            Name      = 'Tailscale'
-            Id        = 'Tailscale.Tailscale'
-            Installed = [bool](Get-MeshClipTrustedCommand -Name tailscale)
-        },
-        [pscustomobject]@{
-            Name      = 'KDE Connect'
-            Id        = 'KDE.KDEConnect'
-            Installed = [bool](Get-MeshClipKdeInstallRoot)
-        }
+        @{ name = 'Tailscale'; id = 'Tailscale.Tailscale'; installed = [bool](Get-MeshClipTrustedCommand -Name tailscale) },
+        @{ name = 'KDE Connect'; id = 'KDE.KDEConnect'; installed = [bool](Get-MeshClipKdeInstallRoot) }
     )
-
     foreach ($package in $packages) {
-        if ($package.Installed) {
-            Write-Host "[PASS] $($package.Name) is already installed; no upgrade was requested."
-            continue
-        }
-        if ($PSCmdlet.ShouldProcess($package.Name, "Install exact WinGet package $($package.Id) from source winget")) {
-            Invoke-MeshClipExternal -FilePath $winget -ArgumentList @(
-                'install', '--id', $package.Id, '--exact', '--source', 'winget',
-                '--silent', '--accept-package-agreements', '--accept-source-agreements',
-                '--disable-interactivity'
-            ) | Out-Null
-            Write-Host "[PASS] Installed $($package.Name)."
+        if ($package.installed) { continue }
+        if ($PSCmdlet.ShouldProcess($package.name, 'Install official package; package installation is retained on integration failure')) {
+            $winget = Get-MeshClipTrustedCommand -Name winget
+            if (-not $winget) { throw 'WinGet is required only for missing packages. Install App Installer and rerun.' }
+            Invoke-MeshClipExternal -FilePath $winget -ArgumentList @('install','--id',$package.id,'--exact','--source','winget','--silent','--accept-package-agreements','--accept-source-agreements','--disable-interactivity') -TimeoutSeconds 600 | Out-Null
+            $notes.Add("Installed $($package.name). Third-party packages are intentionally retained if later integration fails.")
         }
     }
-
+    $plan = [Collections.Generic.List[object]]::new()
     $tailscale = Get-MeshClipTrustedCommand -Name tailscale
     if ($tailscale) {
-        $status = $null
-        try {
-            $status = Get-MeshClipTailscaleStatus
-        }
-        catch {
-            throw 'Tailscale status could not be verified safely. Raw command output was suppressed.'
-        }
-        if ($status.BackendState -ne 'Running' -or -not $status.SelfOnline) {
-            Write-Warning 'Tailscale is installed but not online. Complete the official browser login, then rerun this script.'
-        }
+        $status = Get-MeshClipTailscaleStatus
+        if ($status.BackendState -ne 'Running' -or -not $status.SelfOnline) { $notes.Add('Tailscale authentication/connection still requires attention.') }
         elseif (-not $SkipTailscaleUnattended) {
             $prefs = Get-MeshClipTailscalePreferences
-            if (-not $prefs) {
-                throw 'Tailscale Run Unattended could not be verified; setup stopped without changing the preference.'
-            }
-            if (-not $prefs.ForceDaemon) {
-                if (-not (Test-MeshClipAdministrator)) {
-                    throw 'Open PowerShell 7 as Administrator to enable Tailscale Run Unattended, then rerun setup.'
-                }
-                if ($PSCmdlet.ShouldProcess('Tailscale', 'Enable Run Unattended without resetting other preferences')) {
-                    Invoke-MeshClipExternal -FilePath $tailscale -ArgumentList @('set', '--unattended=true') | Out-Null
-                    $state.tailscaleModeChanged = $true
-                    $stateChanged = $true
-                    $unattendedEnabledThisRun = $true
-                    Write-Host '[PASS] Enabled Tailscale Run Unattended.'
-                }
-            }
-            else {
-                Write-Host '[PASS] Tailscale Run Unattended is already enabled.'
-            }
-        }
-
-        if ($status.BackendState -eq 'Running') {
-            try {
-                $shield = Invoke-MeshClipExternal -FilePath $tailscale -ArgumentList @('get', 'shields-up')
-                if (($shield.Output -join '').Trim() -eq 'true') {
-                    Write-Warning 'Tailscale shields-up is enabled. Incoming KDE Connect traffic will be blocked; change this manually if intentional.'
-                }
-            }
-            catch {
-                Write-Warning 'Could not verify the Tailscale shields-up setting.'
-            }
+            if (-not $prefs) { throw 'Tailscale preference is unknown; no integration change made.' }
+            if (-not $prefs.ForceDaemon) { $plan.Add(@{ kind = 'TailscaleMode'; data = @{ before = $false }; flag = 'tailscaleModeChanged' }) }
         }
     }
-
     $indicator = Get-MeshClipKdeExecutable -Kind indicator
     if ($indicator) {
-        if (-not $SkipKdeStartup) {
-            $startup = Get-MeshClipStartupInfo
-            if ($startup.Exists -and $startup.Matches) {
-                Write-Host '[PASS] KDE Connect login startup already points to the trusted indicator executable.'
-            }
-            elseif ($PSCmdlet.ShouldProcess('Current user startup folder', 'Create KDE Connect login startup shortcut')) {
-                $result = New-MeshClipStartupShortcut
-                if ($result.Created) {
-                    $state.startupShortcutCreated = $true
-                    $stateChanged = $true
-                    $startupCreatedThisRun = $true
-                }
-                Write-Host '[PASS] KDE Connect login startup is configured.'
-            }
-        }
-
-        if (-not $NoLaunchKdeConnect -and -not (Get-Process -Name kdeconnect-indicator -ErrorAction SilentlyContinue)) {
-            if ($PSCmdlet.ShouldProcess('KDE Connect', 'Start the user tray indicator once')) {
-                Start-Process -FilePath $indicator
-                Write-Host '[PASS] Started KDE Connect indicator.'
-            }
-        }
-
+        if (-not $SkipKdeStartup -and -not (Get-MeshClipStartupInfo).Exists) { $plan.Add(@{ kind = 'ShortcutCreate'; data = @{ type = 'startup' }; flag = 'startupShortcutCreated' }) }
         if (-not $SkipKdeWatchdog) {
+            if (-not (Get-MeshClipWatchdogStartupInfo).Exists) { $plan.Add(@{ kind = 'ShortcutCreate'; data = @{ type = 'watchdog' }; flag = 'watchdogShortcutCreated' }) }
+            if (-not (Get-MeshClipWatchdogTaskInfo).Exists) { $plan.Add(@{ kind = 'WatchdogTaskCreate'; data = @{}; flag = 'watchdogTaskCreated' }) }
+        }
+    } else { $notes.Add('KDE Connect is unavailable; install it before integration can complete.') }
+    try {
+        foreach ($item in $plan) {
+            if (-not $PSCmdlet.ShouldProcess('Current-user MeshClip integration', $item.kind + ':' + $item.flag)) { continue }
+            if ($item.kind -eq 'TailscaleMode' -and -not (Test-MeshClipAdministrator)) { throw 'Enabling unattended mode requires an elevated window for this same Windows user.' }
+            if (-not $state.pendingTransaction) { Start-MeshClipTransaction -State $state -Operation 'install' }
+            $step = Add-MeshClipTransactionStep -State $state -Kind $item.kind -Data $item.data
+            switch ($item.kind) {
+                'TailscaleMode' {
+                    Invoke-MeshClipExternal -FilePath $tailscale -ArgumentList @('set','--unattended=true') | Out-Null
+                    $readback = Get-MeshClipTailscalePreferences
+                    if (-not $readback -or -not $readback.ForceDaemon) { throw 'Unattended mode did not verify.' }
+                }
+                'ShortcutCreate' {
+                    if ($item.data.type -eq 'startup') { New-MeshClipStartupShortcut | Out-Null; $readback = Get-MeshClipStartupInfo }
+                    else { New-MeshClipWatchdogStartupShortcut | Out-Null; $readback = Get-MeshClipWatchdogStartupInfo }
+                    if (-not $readback.OwnedAndUnchanged) { throw 'Startup shortcut did not verify.' }
+                }
+                'WatchdogTaskCreate' {
+                    New-MeshClipWatchdogTask | Out-Null
+                    if (-not (Get-MeshClipWatchdogTaskInfo).Compliant) { throw 'Supervisor task did not verify.' }
+                }
+            }
+            $state.($item.flag) = $true
+            Complete-MeshClipTransactionStep -State $state -Step $step
+            $changed++
+        }
+        Complete-MeshClipTransaction -State $state
+    }
+    catch {
+        $cause = $_
+        if ($state.pendingTransaction) {
+            $recovery = Repair-MeshClipTransaction -State $state
+            if ($recovery.status -ne 'recovered') { throw 'Integration failed; incomplete recovery remains recorded. Run recover.ps1.' }
+        }
+        throw $cause
+    }
+    # Launch only after durable integration commit; never hide a launch failure
+    # behind a successful configuration result. Session 0 cannot launch a tray.
+    if (-not $NoLaunchKdeConnect -and -not $WhatIfPreference -and $indicator) {
+        if ((Get-Process -Id $PID).SessionId -eq 0) { $notes.Add('Configuration is committed. Tray/watchdog launch must occur in the interactive user session.') }
+        else {
             try {
-                $watchdogStartup = Get-MeshClipWatchdogStartupInfo
-                if ($watchdogStartup.Exists -and $watchdogStartup.OwnedAndUnchanged) {
-                    Write-Host '[PASS] KDE Connect watchdog login startup is already configured.'
-                }
-                elseif ($watchdogStartup.Exists) {
-                    throw 'A different watchdog startup shortcut exists. Refusing to overwrite it.'
-                }
-                elseif ($PSCmdlet.ShouldProcess('Current user startup folder', 'Create the silent KDE Connect watchdog shortcut')) {
-                    $watchdogResult = New-MeshClipWatchdogStartupShortcut
-                    if ($watchdogResult.Created) {
-                        $state.watchdogShortcutCreated = $true
-                        $stateChanged = $true
-                        $watchdogShortcutCreatedThisRun = $true
+                if (-not $SkipKdeWatchdog) {
+                    if ((Get-MeshClipWatchdogControl).paused) { $notes.Add('Watchdog is deliberately paused; no automatic launch requested.') }
+                    elseif ($PSCmdlet.ShouldProcess('MeshClip watchdog', 'Launch in this user session')) {
+                        Start-MeshClipWatchdog | Out-Null
+                        Start-Sleep -Milliseconds 800
+                        if (-not (Get-MeshClipWatchdogProcessInfo).Running) { throw 'Watchdog launch did not verify.' }
                     }
-                    Write-Host '[PASS] KDE Connect watchdog login startup is configured.'
                 }
-
-                $watchdogTask = Get-MeshClipWatchdogTaskInfo
-                if ($watchdogTask.Exists -and $watchdogTask.Compliant) {
-                    Write-Host '[PASS] KDE Connect watchdog supervisor task is already configured.'
+                elseif (-not @(Get-Process -Name kdeconnect-indicator -ErrorAction SilentlyContinue | Where-Object SessionId -eq (Get-Process -Id $PID).SessionId).Count -and $PSCmdlet.ShouldProcess('KDE Connect', 'Launch indicator')) {
+                    Start-Process -FilePath $indicator
                 }
-                elseif ($watchdogTask.Exists) {
-                    throw 'A different KDE Connect watchdog supervisor task exists. Refusing to overwrite it.'
-                }
-                elseif ($PSCmdlet.ShouldProcess('Current user scheduled tasks', 'Create the low-privilege watchdog supervisor')) {
-                    $watchdogTaskResult = New-MeshClipWatchdogTask
-                    if ($watchdogTaskResult.Created) {
-                        $state.watchdogTaskCreated = $true
-                        $stateChanged = $true
-                        $watchdogTaskCreatedThisRun = $true
-                    }
-                    Write-Host '[PASS] KDE Connect watchdog supervisor task is configured.'
-                }
-
-                if (-not $NoLaunchKdeConnect -and
-                    -not (Get-MeshClipWatchdogProcessInfo).Running -and
-                    $PSCmdlet.ShouldProcess('KDE Connect watchdog', 'Start one silent current-session watchdog')) {
-                    $watchdogLaunch = Start-MeshClipWatchdog
-                    $watchdogStartedThisRun = $watchdogLaunch.Started
-                    Write-Host '[PASS] Started the silent KDE Connect watchdog.'
-                }
-            }
-            catch {
-                if ($watchdogTaskCreatedThisRun) {
-                    try {
-                        Remove-MeshClipWatchdogTask | Out-Null
-                        $state.watchdogTaskCreated = $false
-                    }
-                    catch { Write-Warning 'The newly created watchdog supervisor task could not be rolled back.' }
-                }
-                if ($watchdogStartedThisRun) {
-                    Stop-MeshClipWatchdogProcesses -ErrorAction SilentlyContinue
-                }
-                if ($watchdogShortcutCreatedThisRun) {
-                    $watchdogStartup = Get-MeshClipWatchdogStartupInfo
-                    if ($watchdogStartup.OwnedAndUnchanged) {
-                        Remove-Item -LiteralPath (Get-MeshClipPaths).WatchdogShortcut -Force
-                    }
-                    $state.watchdogShortcutCreated = $false
-                }
-                throw
-            }
+            } catch { $notes.Add('Configuration committed, but user-session launch could not be verified. Use the control center; no configuration rollback was implied.') }
         }
     }
-    else {
-        Write-Warning 'KDE Connect is not yet available. If -WhatIf was used, this is expected.'
-    }
-
-    if ($stateChanged -and -not $WhatIfPreference) {
-        try {
-            Save-MeshClipState -State $state
-        }
-        catch {
-            $rollbackErrors = [Collections.Generic.List[string]]::new()
-            if ($watchdogTaskCreatedThisRun) {
-                try { Remove-MeshClipWatchdogTask | Out-Null }
-                catch { $rollbackErrors.Add('watchdog supervisor task') }
-            }
-            if ($watchdogStartedThisRun) {
-                try { Stop-MeshClipWatchdogProcesses }
-                catch { $rollbackErrors.Add('watchdog process') }
-            }
-            if ($watchdogShortcutCreatedThisRun) {
-                try {
-                    $watchdogStartup = Get-MeshClipWatchdogStartupInfo
-                    if (-not $watchdogStartup.OwnedAndUnchanged) { throw 'shortcut changed' }
-                    $watchdogPaths = Get-MeshClipPaths
-                    Remove-Item -LiteralPath $watchdogPaths.WatchdogShortcut -Force
-                    if (Test-Path -LiteralPath $watchdogPaths.WatchdogStatusPath -PathType Leaf) {
-                        Remove-Item -LiteralPath $watchdogPaths.WatchdogStatusPath -Force
-                    }
-                }
-                catch { $rollbackErrors.Add('watchdog startup shortcut') }
-            }
-            if ($startupCreatedThisRun) {
-                try {
-                    $startup = Get-MeshClipStartupInfo
-                    if (-not $startup.OwnedAndUnchanged) { throw 'shortcut changed' }
-                    Remove-Item -LiteralPath (Get-MeshClipPaths).StartupShortcut -Force
-                }
-                catch { $rollbackErrors.Add('startup shortcut') }
-            }
-            if ($unattendedEnabledThisRun) {
-                try { Invoke-MeshClipExternal -FilePath $tailscale -ArgumentList @('set', '--unattended=false') | Out-Null }
-                catch { $rollbackErrors.Add('Tailscale unattended mode') }
-            }
-            if ($rollbackErrors.Count -gt 0) {
-                throw "Setup state could not be saved and rollback was incomplete for: $($rollbackErrors -join ', ')."
-            }
-            throw 'Setup state could not be saved; changes made by this run were rolled back.'
-        }
-    }
-
-    Write-Host ''
-    Write-Host 'Next: put both computers in the same Tailnet, then run configure-peer.ps1 on each computer from an elevated PowerShell 7 window.'
+    $result = [pscustomobject]@{ schema = 'meshclip.install.v1'; status = if ($WhatIfPreference) { 'preview' } elseif ($notes.Count) { 'needs_attention' } else { 'configured' }; integration_changes = $changed; notes = @($notes); business_acceptance = 'not_tested' }
+    if ($AsJson) { $result | ConvertTo-Json -Depth 6 } else { $result | Format-List; Write-Host 'Next: configure the opposite peer, confirm pairing, then use acceptance.ps1. Control center: control-center.ps1.' }
 }
-finally {
-    Exit-MeshClipOperationLock -Lock $lock
-}
+finally { Exit-MeshClipOperationLock -Lock $lock }

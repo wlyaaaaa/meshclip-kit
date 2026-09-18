@@ -11,6 +11,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'MeshClip.Common.psm1') -Force
 
+$lock = Enter-MeshClipOperationLock
+try {
 $paths = Get-MeshClipPaths
 if (-not (Test-Path -LiteralPath $paths.StatePath -PathType Leaf)) {
     throw 'No valid MeshClip Kit state file exists. Refusing to guess which resources to remove.'
@@ -49,8 +51,6 @@ if ((@($state.firewallRules).Count -gt 0 -or
     throw 'Open PowerShell 7 as Administrator before applying removal.'
 }
 
-$lock = Enter-MeshClipOperationLock
-try {
     $remainingPeers = [Collections.Generic.List[string]]::new()
     foreach ($address in @($state.addedPeers)) { $remainingPeers.Add([string]$address) }
     foreach ($address in @($state.addedPeers)) {
@@ -64,10 +64,12 @@ try {
         }
     }
     $state.addedPeers = @($remainingPeers)
+    if (-not $WhatIfPreference) { Save-MeshClipState -State $state }
 
     if (@($state.firewallRules).Count -gt 0 -and $PSCmdlet.ShouldProcess('Windows Firewall', 'Remove recorded MeshClip Kit rules')) {
         Remove-MeshClipFirewallRules -Names @($state.firewallRules)
         $state.firewallRules = @()
+        if (-not $WhatIfPreference) { Save-MeshClipState -State $state }
         Write-Host '[PASS] Removed recorded project-owned firewall rules.'
     }
 
