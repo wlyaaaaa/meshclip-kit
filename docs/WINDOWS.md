@@ -2,6 +2,8 @@
 
 ## 1. Install
 
+On another computer, first compare the cloned repository's `git rev-parse HEAD` with the reviewed commit supplied for that deployment. Stop if they differ; do not run installation scripts from an unreviewed checkout.
+
 Open PowerShell 7. If Tailscale Run Unattended is not already enabled, use an
 elevated PowerShell 7 window so the preference change can be verified:
 
