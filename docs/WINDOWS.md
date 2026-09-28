@@ -11,7 +11,7 @@ elevated PowerShell 7 window so the preference change can be verified:
 pwsh -File .\scripts\install-windows.ps1
 ```
 
-The script installs missing official WinGet packages, enables Tailscale Run
+For the always-on main computer, the script installs missing official WinGet packages, enables Tailscale Run
 Unattended when the device is already authenticated, verifies KDE Connect's
 login startup shortcut, installs a silent current-user watchdog, and starts KDE
 Connect and the watchdog once. The watchdog checks every 60 seconds and starts
@@ -25,6 +25,28 @@ login shortcut, the hidden watchdog has a login shortcut, and Task Scheduler
 supervises the watchdog. None runs before Windows user sign-in. The task does
 not wake the computer and Tailscale continues to use its own automatic Windows
 service and vendor recovery policy.
+
+For the on-demand secondary computer, first inspect recovery state with
+`pwsh -NoProfile -File .\scripts\recover.ps1 -AsJson`. Use the reviewed full
+commit ID in both commands below. Run these in the intended signed-in user's
+PowerShell 7 session; if Tailscale Run Unattended still needs enabling, that
+same session must be elevated. Preview first:
+
+```powershell
+pwsh -NoProfile -File .\scripts\deploy-on-demand.ps1 -ExpectedCommit <REVIEWED_40_CHARACTER_COMMIT> -WhatIf
+pwsh -NoProfile -File .\scripts\deploy-on-demand.ps1 -ExpectedCommit <REVIEWED_40_CHARACTER_COMMIT>
+```
+
+This verifies the checkout commit, installs missing official components,
+preserves an existing KDE pairing and exact-peer rules, removes only the
+unchanged project-owned KDE login shortcut, and records on-demand mode. It
+does not launch KDE or install a watchdog. If a watchdog layer or altered
+startup shortcut exists, it stops for review instead of overriding it. Open
+KDE Connect when clipboard sharing is wanted; quit KDE Connect when it is not.
+The old heartbeat then remains stale by design. Confirm the peer and firewall
+with `doctor.ps1 -Summary`; it reports an intentionally closed secondary as
+healthy for the KDE runtime checks. Real transfers still require two-device
+acceptance.
 
 If Tailscale needs authentication, complete the official browser flow and run
 the script again. Never paste an auth key into a command or chat.
@@ -64,13 +86,11 @@ optional rollback, and still creates only the two exact-peer project rules.
 Any failure rolls back changes made by that run or reports the incomplete
 rollback as a blocking error.
 
-## 3. Pair and harden
+## 3. Pair
 
 1. Open KDE Connect on both computers.
 2. Confirm the same pairing identity on both devices.
-3. Open the peer's Clipboard plugin settings.
-4. Disable **Including passwords**.
-5. Keep file receipt set to a dedicated Downloads subfolder.
+3. Keep file receipt set to a dedicated Downloads subfolder.
 
 ## 4. Diagnose
 
@@ -86,10 +106,13 @@ files into a public issue or chat.
 the same pairing request on both computers. Device discovery alone is not
 pairing evidence.
 
-All three watchdog checks must be `PASS`: the login shortcut must still target
+On the main computer, all three watchdog checks must be `PASS`: the login shortcut must still target
 the project-owned `wscript.exe` wrapper, the supervisor task must retain its
 exact current-user limited contract, and exactly one current-session watchdog
 must have a fresh heartbeat.
+
+On the secondary computer, those checks pass when no watchdog layer exists;
+an old or missing heartbeat is expected while KDE Connect is off.
 
 ## 5. Acceptance
 
@@ -99,10 +122,12 @@ must have a fresh heartbeat.
 - Compare SHA-256 on both sides with `Get-FileHash`.
 - Obtain explicit user approval before rebooting either device, then verify
   Tailscale pre-login availability and KDE Connect recovery after user login.
-- Close the KDE Connect indicator once and verify that the watchdog restores
-  exactly one indicator within about one minute.
-- End the hidden watchdog once and verify that the supervisor restores exactly
-  one watchdog within about two minutes.
+- On the main computer, close the KDE Connect indicator once and verify that
+  the watchdog restores exactly one indicator within about one minute. End its
+  hidden watchdog once and verify that the supervisor restores it within about
+  two minutes.
+- On the secondary computer, quit KDE Connect and verify that it stays closed;
+  reopen it and repeat a generated text transfer.
 - Lock the logged-in session and record observed behavior.
 
 ## Recovery and visible control

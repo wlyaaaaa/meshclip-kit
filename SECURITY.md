@@ -17,7 +17,7 @@ Local state is written under `%LOCALAPPDATA%\MeshClipKit`. KDE Connect identity
 files remain under `%LOCALAPPDATA%\kdeconnect` and are never copied by these
 scripts.
 
-The Windows watchdog is a current-user, login-scoped recovery process. Its
+On the always-on main computer, the Windows watchdog is a current-user, login-scoped recovery process. Its
 first launcher is `wscript.exe`, so background startup does not require a
 console window. It checks only whether the trusted KDE Connect indicator is
 running in the same interactive session. Its heartbeat contains only a schema,
@@ -48,6 +48,9 @@ device identity, addresses, Tailscale state, files, or firewall configuration.
 
 ## Startup and watchdog policy
 
+- The main computer keeps KDE Connect running. The secondary computer is
+  on-demand: closing KDE Connect is intentional, and it has no KDE login
+  shortcut, watchdog shortcut, or watchdog supervisor task.
 - Tailscale remains an automatic Windows service using its vendor-provided
   failure-recovery actions. MeshClip Kit does not replace that service or run a
   second privileged network watchdog.
@@ -66,15 +69,11 @@ device identity, addresses, Tailscale state, files, or firewall configuration.
 - The task neither wakes a sleeping device nor provides pre-login receipt. Its
   two-minute trigger supervises the watchdog only while this user is signed in.
 
-## Clipboard warning
+## Clipboard acceptance
 
-Clipboard content may contain passwords, API keys, OTPs, session cookies, or
-other secrets. KDE Connect can only identify password-manager content when the
-source application marks it correctly. After pairing, disable the Clipboard
-plugin option **Including passwords** for every peer. This reduces risk but is
-not a complete secret-detection mechanism.
-
-Do not use real secrets for acceptance testing.
+Password synchronization between the owner's trusted devices is allowed. Use
+generated non-secret samples for acceptance testing so results can be shared
+without copying actual clipboard content into reports.
 
 ## Reporting a vulnerability
 

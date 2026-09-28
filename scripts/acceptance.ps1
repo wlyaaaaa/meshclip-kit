@@ -4,12 +4,12 @@ param([ValidateSet('Plan','Prepare','VerifyFile','RecordClipboard','RecordCheck'
     [string]$RunDirectory,[ValidateRange(1,1024)][int[]]$SizesMiB=@(1),[string]$ReceivedPath,[string]$FixtureName,
     [ValidateSet('Forward','Reverse')][string]$Direction='Forward',[ValidateRange(0,99)][int]$SequenceIndex=0,
     [string]$ObservedMarker,[ValidateRange(0,3600000)][Nullable[int]]$LatencyMilliseconds=$null,
-    [ValidateSet('pairing','passwords-excluded','reboot-recovery','no-echo-loop')][string]$Check,[switch]$Observed,[switch]$AsJson)
+    [ValidateSet('pairing','reboot-recovery','no-echo-loop')][string]$Check,[switch]$Observed,[switch]$AsJson)
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'MeshClip.Common.psm1') -Force
 if($Action -eq 'Plan'){
     [pscustomobject]@{schema='meshclip.acceptance-plan.v1';status='not_tested';steps=@(
-        '在两台设备上确认相同配对身份，并关闭 Including passwords。',
+        '在两台设备上确认相同配对身份。',
         'Prepare 生成专用测试标记与文件；不使用真实剪贴板历史、密码或个人文件。',
         '两个方向分别复制 100 个标记，观察延迟与回环；RecordClipboard 只记录明确提供的观察。',
         '用 KDE Connect 两个方向传输生成文件，再用 VerifyFile 校验实际收到的副本。',

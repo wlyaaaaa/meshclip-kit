@@ -255,4 +255,10 @@ Describe 'Runtime health distinguishes deliberate pause and configuration uncert
     It 'does not hide a dead watchdog just because restart is paused' {
         (Get-MeshClipWatchdogRuntimeCheck -ProcessInfo ([pscustomobject]@{Running=$false}) -Heartbeat ([pscustomobject]@{Available=$true;Fresh=$false;Status='Paused'}) -Control ([pscustomobject]@{paused=$true})).Status|Should -Be 'FAIL'
     }
+    It 'accepts an old heartbeat and no process in on-demand mode' {
+        (Get-MeshClipWatchdogRuntimeCheck -ProcessInfo ([pscustomobject]@{Running=$false;Count=0}) -Heartbeat ([pscustomobject]@{Available=$true;Fresh=$false;Status='Healthy'}) -Control $null -OnDemand).Status|Should -Be 'PASS'
+    }
+    It 'detects an unexpected watchdog in on-demand mode' {
+        (Get-MeshClipWatchdogRuntimeCheck -ProcessInfo ([pscustomobject]@{Running=$true;Count=1}) -Heartbeat ([pscustomobject]@{Available=$true;Fresh=$true;Status='Healthy'}) -Control $null -OnDemand).Status|Should -Be 'FAIL'
+    }
 }

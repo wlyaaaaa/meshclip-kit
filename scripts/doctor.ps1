@@ -11,6 +11,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'MeshClip.Common.psm1') -Force
+$onDemand = $false
+try { $onDemand = (Get-MeshClipState).kdeMode -eq 'on_demand' } catch { }
 
 $checks = [Collections.Generic.List[object]]::new()
 function Add-Check {
@@ -125,15 +127,25 @@ else {
     Add-Check 'KDE Connect installation' 'FAIL' 'KDE Connect standard package was not found.'
 }
 
-if (Get-Process -Name kdeconnect-indicator -ErrorAction SilentlyContinue) {
+$indicatorRunning = [bool](Get-Process -Name kdeconnect-indicator -ErrorAction SilentlyContinue)
+if ($indicatorRunning) {
     Add-Check 'KDE Connect indicator' 'PASS' 'User tray process is running.'
+}
+elseif ($onDemand) {
+    Add-Check 'KDE Connect indicator' 'PASS' 'KDE Connect is intentionally closed in on-demand mode.'
 }
 else {
     Add-Check 'KDE Connect indicator' 'WARN' 'User tray process is not running.'
 }
 
 $startup = Get-MeshClipStartupInfo
-if ($startup.Exists -and $startup.Matches) {
+if ($onDemand -and -not $startup.Exists) {
+    Add-Check 'KDE Connect login startup' 'PASS' 'No login startup is expected in on-demand mode.'
+}
+elseif ($onDemand) {
+    Add-Check 'KDE Connect login startup' 'FAIL' 'Login startup is present in on-demand mode.'
+}
+elseif ($startup.Exists -and $startup.Matches) {
     Add-Check 'KDE Connect login startup' 'PASS' 'Startup shortcut targets the trusted indicator.'
 }
 elseif ($startup.Exists) {
@@ -144,7 +156,13 @@ else {
 }
 
 $watchdogStartup = Get-MeshClipWatchdogStartupInfo
-if ($watchdogStartup.Exists -and $watchdogStartup.OwnedAndUnchanged) {
+if ($onDemand -and -not $watchdogStartup.Exists) {
+    Add-Check 'KDE watchdog login startup' 'PASS' 'No watchdog startup is expected in on-demand mode.'
+}
+elseif ($onDemand) {
+    Add-Check 'KDE watchdog login startup' 'FAIL' 'Watchdog startup is present in on-demand mode.'
+}
+elseif ($watchdogStartup.Exists -and $watchdogStartup.OwnedAndUnchanged) {
     Add-Check 'KDE watchdog login startup' 'PASS' 'The silent project-owned watchdog shortcut is unchanged.'
 }
 elseif ($watchdogStartup.Exists) {
@@ -156,7 +174,13 @@ else {
 
 try {
     $watchdogTask = Get-MeshClipWatchdogTaskInfo
-    if ($watchdogTask.Exists -and $watchdogTask.Compliant) {
+    if ($onDemand -and -not $watchdogTask.Exists) {
+        Add-Check 'KDE watchdog supervisor' 'PASS' 'No watchdog task is expected in on-demand mode.'
+    }
+    elseif ($onDemand) {
+        Add-Check 'KDE watchdog supervisor' 'FAIL' 'A watchdog task is present in on-demand mode.'
+    }
+    elseif ($watchdogTask.Exists -and $watchdogTask.Compliant) {
         Add-Check 'KDE watchdog supervisor' 'PASS' 'A current-user, limited task checks the watchdog every two minutes.'
     }
     elseif ($watchdogTask.Exists) {
@@ -174,7 +198,7 @@ $watchdogProcess = Get-MeshClipWatchdogProcessInfo
 $watchdogStatus = Get-MeshClipWatchdogStatus
 $watchdogControl = $null
 try { $watchdogControl = Get-MeshClipWatchdogControl } catch { }
-$watchdogCheck = Get-MeshClipWatchdogRuntimeCheck -ProcessInfo $watchdogProcess -Heartbeat $watchdogStatus -Control $watchdogControl
+$watchdogCheck = Get-MeshClipWatchdogRuntimeCheck -ProcessInfo $watchdogProcess -Heartbeat $watchdogStatus -Control $watchdogControl -OnDemand:$onDemand
 Add-Check 'KDE watchdog runtime' $watchdogCheck.Status $watchdogCheck.Detail
 $paths = Get-MeshClipPaths
 try {
@@ -256,7 +280,10 @@ catch {
 }
 
 $deviceSummary = Get-MeshClipKdeDeviceSummary
-if ($deviceSummary.Status -eq 'Available' -and $deviceSummary.Available -gt 0) {
+if ($onDemand -and -not $indicatorRunning) {
+    Add-Check 'KDE peer availability' 'PASS' 'Peer availability is not expected while KDE Connect is intentionally closed.'
+}
+elseif ($deviceSummary.Status -eq 'Available' -and $deviceSummary.Available -gt 0) {
     Add-Check 'KDE peer availability' 'WARN' 'A KDE Connect device is visible. Manually confirm the same pairing identity on both computers.'
 }
 elseif ($deviceSummary.Status -eq 'Available') {
@@ -266,7 +293,6 @@ else {
     Add-Check 'KDE peer availability' 'UNKNOWN' 'KDE Connect CLI status could not be read.'
 }
 
-Add-Check 'Clipboard password sharing' 'WARN' 'Manually verify that each peer has Including passwords disabled.'
 if (Test-MeshClipCloudClipboardEnabled) {
     Add-Check 'Windows cloud clipboard' 'WARN' 'Windows cloud clipboard appears enabled; KDE-written text may also sync through Microsoft cloud.'
 }

@@ -13,6 +13,9 @@ $changed = 0
 try {
     $state = Get-MeshClipState
     Assert-MeshClipNoPendingTransaction -State $state
+    if ($state.kdeMode -eq 'on_demand' -and (-not $SkipKdeStartup -or -not $SkipKdeWatchdog)) {
+        throw 'This computer uses on-demand KDE mode. Re-run with -SkipKdeStartup -SkipKdeWatchdog or use deploy-on-demand.ps1.'
+    }
     # Check conflicts before installing packages or changing preferences.
     if (-not $SkipKdeStartup) {
         $startup = Get-MeshClipStartupInfo

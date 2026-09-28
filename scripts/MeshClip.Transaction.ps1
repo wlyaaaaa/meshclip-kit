@@ -297,7 +297,11 @@ function Set-MeshClipWatchdogControl {
 
 function Get-MeshClipWatchdogRuntimeCheck {
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$ProcessInfo,[Parameter(Mandatory)]$Heartbeat,[AllowNull()]$Control)
+    param([Parameter(Mandatory)]$ProcessInfo,[Parameter(Mandatory)]$Heartbeat,[AllowNull()]$Control,[switch]$OnDemand)
+    if($OnDemand){
+        if($ProcessInfo.Count -gt 0){return [pscustomobject]@{Status='FAIL';Detail='On-demand mode has an unexpected watchdog process.'}}
+        return [pscustomobject]@{Status='PASS';Detail='No watchdog is expected in on-demand mode; an old heartbeat is ignored.'}
+    }
     if($null -eq $Control){return [pscustomobject]@{Status='UNKNOWN';Detail='Watchdog intent could not be read; health is not inferred.'}}
     if(-not($ProcessInfo.Running -and $Heartbeat.Available -and $Heartbeat.Fresh)){
         return [pscustomobject]@{Status='FAIL';Detail='Watchdog process or heartbeat is missing, ambiguous or stale.'}

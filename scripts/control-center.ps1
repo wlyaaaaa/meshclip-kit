@@ -6,8 +6,9 @@ Import-Module (Join-Path $PSScriptRoot 'MeshClip.Common.psm1') -Force
 function Get-ControlSnapshot {
     $control=Get-MeshClipWatchdogControl
     $heartbeat=Get-MeshClipWatchdogStatus
+    $mode=(Get-MeshClipState).kdeMode
     [pscustomobject]@{schema='meshclip.control.v1'; observedUtc=[DateTimeOffset]::UtcNow.ToString('O')
-        watchdog_intent=$control.mode; resume_at=$control.resumeAt; heartbeat=$heartbeat
+        kde_mode=$mode; watchdog_expected=($mode -eq 'always_on'); watchdog_intent=$control.mode; resume_at=$control.resumeAt; heartbeat=$heartbeat
         watchdog_process=Get-MeshClipWatchdogProcessInfo; recovery=Get-MeshClipRecoverySummary
         clipboard_acceptance='not_tested'; file_transfer_acceptance='not_tested'
         note='暂停只停止自动拉起，不关闭现有 KDE Connect；恢复在下次检查生效。'}
@@ -35,7 +36,7 @@ foreach($spec in @(@('暂停一小时','pause-hour'),@('暂停直到恢复','pau
             switch([string]$sender.Tag){
                 'pause-hour'{Set-MeshClipWatchdogControl -Mode Pause -Minutes 60 -Confirm:$false|Out-Null}
                 'pause'{Set-MeshClipWatchdogControl -Mode Pause -Confirm:$false|Out-Null}
-                'resume'{Set-MeshClipWatchdogControl -Mode Resume -Confirm:$false|Out-Null;if(-not(Get-MeshClipWatchdogProcessInfo).Running){Start-MeshClipWatchdog|Out-Null}}
+                'resume'{if((Get-MeshClipState).kdeMode -eq 'on_demand'){throw 'On-demand KDE mode has no watchdog to resume.'};Set-MeshClipWatchdogControl -Mode Resume -Confirm:$false|Out-Null;if(-not(Get-MeshClipWatchdogProcessInfo).Running){Start-MeshClipWatchdog|Out-Null}}
                 'refresh'{}
                 default {
                     $script=Join-Path $PSScriptRoot ([string]$sender.Tag)

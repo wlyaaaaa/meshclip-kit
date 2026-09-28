@@ -675,6 +675,7 @@ function Get-MeshClipState {
             watchdogShortcutCreated = $false
             watchdogTaskCreated    = $false
             tailscaleModeChanged   = $false
+            kdeMode                = 'always_on'
         }
     }
     try {
@@ -697,6 +698,12 @@ function Get-MeshClipState {
     }
     if (-not $state.PSObject.Properties['watchdogTaskCreated']) {
         $state | Add-Member -NotePropertyName watchdogTaskCreated -NotePropertyValue $false
+    }
+    if (-not $state.PSObject.Properties['kdeMode']) {
+        $state | Add-Member -NotePropertyName kdeMode -NotePropertyValue 'always_on'
+    }
+    if ($state.kdeMode -notin @('always_on', 'on_demand')) {
+        throw 'MeshClip Kit KDE mode is invalid.'
     }
     return $state
 }
@@ -1100,6 +1107,13 @@ function Get-MeshClipWatchdogProcessInfo {
     param()
 
     $processes = @(Get-MeshClipWatchdogProcesses)
+    # A scheduled launch briefly overlaps the mutex owner before it exits.
+    # Ignore only the new contender when an established process exists.
+    $cutoff = [DateTime]::Now.AddSeconds(-5)
+    $established = @($processes | Where-Object {
+        $_.CreationDate -and ([DateTime]$_.CreationDate) -le $cutoff
+    })
+    if ($established.Count -gt 0) { $processes = $established }
     [pscustomobject]@{
         Running = $processes.Count -eq 1
         Count   = $processes.Count

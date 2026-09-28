@@ -101,6 +101,6 @@ try {
         try { Invoke-MeshClipExternal -FilePath $cli -ArgumentList @('--refresh') | Out-Null }
         catch { Write-Warning 'Configuration committed; discovery refresh could not be verified.' }
     }
-    Write-Host 'Confirm the same pairing request on both devices. Disable Including passwords on both peers. Run acceptance.ps1; configuration is not end-to-end acceptance.'
+    Write-Host 'Confirm the same pairing request on both devices. Run acceptance.ps1; configuration is not end-to-end acceptance.'
 }
 finally { Exit-MeshClipOperationLock -Lock $lock }

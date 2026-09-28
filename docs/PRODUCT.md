@@ -12,10 +12,11 @@ Current acceptance covers only a Windows 11 laptop and desktop on different
 networks:
 
 - Tailscale is online and configured to run unattended.
-- KDE Connect starts after Windows user login.
-- A silent current-user watchdog restores the trusted KDE Connect indicator if
-  that process exits during the logged-in session.
-- A low-privilege Task Scheduler supervisor restores the watchdog itself.
+- On the main computer, KDE Connect starts after Windows user login. A silent
+  current-user watchdog restores its indicator, and a low-privilege Task
+  Scheduler supervisor restores the watchdog.
+- On the secondary computer, KDE Connect is opened only when clipboard sharing
+  is wanted. Closing it is intentional; no watchdog restarts it.
 - Text copied on either computer becomes available on the other computer.
 - Files transfer in both directions and match SHA-256 checksums.
 - Firewall access is limited to the explicitly approved peer.
@@ -47,6 +48,7 @@ replay to devices that were offline.
 1. Clipboard latency is normally under two seconds.
 2. 100 sequential text copies do not create an echo loop.
 3. Test files up to 1 GB arrive with matching SHA-256.
-4. Reboot restores Tailscale before login and KDE Connect after login; the
-   watchdog and its supervisor recover an unexpected user-session exit.
+4. Reboot restores Tailscale before login and KDE Connect on the main computer
+   after login; its watchdog and supervisor recover an unexpected exit. The
+   secondary computer remains off until KDE Connect is opened on demand.
 5. Repository and diagnostics contain no secrets or private identities.

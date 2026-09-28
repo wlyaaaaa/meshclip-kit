@@ -446,6 +446,31 @@ Describe 'Watchdog process command matching' {
     }
 }
 
+Describe 'Watchdog supervisor launch overlap' {
+    It 'ignores a new mutex contender while one established watchdog runs' {
+        InModuleScope MeshClip.Common {
+            Mock Get-MeshClipWatchdogProcesses {
+                @([pscustomobject]@{CreationDate=[DateTime]::Now.AddMinutes(-2)},
+                  [pscustomobject]@{CreationDate=[DateTime]::Now})
+            }
+            $info=Get-MeshClipWatchdogProcessInfo
+            $info.Running | Should -BeTrue
+            $info.Count | Should -Be 1
+        }
+    }
+    It 'still reports two established watchdogs as ambiguous' {
+        InModuleScope MeshClip.Common {
+            Mock Get-MeshClipWatchdogProcesses {
+                @([pscustomobject]@{CreationDate=[DateTime]::Now.AddMinutes(-2)},
+                  [pscustomobject]@{CreationDate=[DateTime]::Now.AddMinutes(-1)})
+            }
+            $info=Get-MeshClipWatchdogProcessInfo
+            $info.Running | Should -BeFalse
+            $info.Count | Should -Be 2
+        }
+    }
+}
+
 Describe 'Watchdog heartbeat timestamp parsing' {
     It 'accepts the DateTime value produced by ConvertFrom-Json' {
         $value = [datetime]'2026-08-11T06:00:00.0000000Z'

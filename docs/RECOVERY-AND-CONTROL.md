@@ -35,7 +35,7 @@ pwsh -NoProfile -File .\scripts\acceptance.ps1
 .\scripts\acceptance.ps1 -Action Summary -RunDirectory '<run directory>'
 ```
 
-Use the generated non-secret text markers, not real clipboard history. In each direction, copy the 100 unique markers using KDE Connect and record an observed marker with `RecordClipboard`, `SequenceIndex`, `ObservedMarker`, `Direction` and the measured `LatencyMilliseconds`. The default missing latency is not a measurement: supply it when claiming timing. Pairing, password exclusion, no echo loop and reboot recovery use `RecordCheck -Check <name> -Observed` only after a real observation.
+Use the generated non-secret text markers, not real clipboard history. In each direction, copy the 100 unique markers using KDE Connect and record an observed marker with `RecordClipboard`, `SequenceIndex`, `ObservedMarker`, `Direction` and the measured `LatencyMilliseconds`. The default missing latency is not a measurement: supply it when claiming timing. Pairing, no echo loop and reboot recovery use `RecordCheck -Check <name> -Observed` only after a real observation.
 
 Transfer the generated files with KDE Connect. Validate a distinct received copy with:
 
