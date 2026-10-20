@@ -22,8 +22,6 @@ try {
         if ($startup.Exists -and -not $startup.Matches) { throw 'A different KDE login shortcut exists; it was preserved.' }
     }
     if (-not $SkipKdeWatchdog) {
-        $watchdogStartup = Get-MeshClipWatchdogStartupInfo
-        if ($watchdogStartup.Exists -and -not $watchdogStartup.OwnedAndUnchanged) { throw 'A different watchdog startup shortcut exists; it was preserved.' }
         $watchdogTask = Get-MeshClipWatchdogTaskInfo
         if ($watchdogTask.Exists -and -not $watchdogTask.Compliant) { throw 'A different watchdog supervisor task exists; it was preserved.' }
     }
@@ -55,7 +53,6 @@ try {
     if ($indicator) {
         if (-not $SkipKdeStartup -and -not (Get-MeshClipStartupInfo).Exists) { $plan.Add(@{ kind = 'ShortcutCreate'; data = @{ type = 'startup' }; flag = 'startupShortcutCreated' }) }
         if (-not $SkipKdeWatchdog) {
-            if (-not (Get-MeshClipWatchdogStartupInfo).Exists) { $plan.Add(@{ kind = 'ShortcutCreate'; data = @{ type = 'watchdog' }; flag = 'watchdogShortcutCreated' }) }
             if (-not (Get-MeshClipWatchdogTaskInfo).Exists) { $plan.Add(@{ kind = 'WatchdogTaskCreate'; data = @{}; flag = 'watchdogTaskCreated' }) }
         }
     } else { $notes.Add('KDE Connect is unavailable; install it before integration can complete.') }
@@ -72,8 +69,7 @@ try {
                     if (-not $readback -or -not $readback.ForceDaemon) { throw 'Unattended mode did not verify.' }
                 }
                 'ShortcutCreate' {
-                    if ($item.data.type -eq 'startup') { New-MeshClipStartupShortcut | Out-Null; $readback = Get-MeshClipStartupInfo }
-                    else { New-MeshClipWatchdogStartupShortcut | Out-Null; $readback = Get-MeshClipWatchdogStartupInfo }
+                    New-MeshClipStartupShortcut | Out-Null; $readback = Get-MeshClipStartupInfo
                     if (-not $readback.OwnedAndUnchanged) { throw 'Startup shortcut did not verify.' }
                 }
                 'WatchdogTaskCreate' {
@@ -94,6 +90,18 @@ try {
             if ($recovery.status -ne 'recovered') { throw 'Integration failed; incomplete recovery remains recorded. Run recover.ps1.' }
         }
         throw $cause
+    }
+    # Retire the redundant launcher only after the supervisor is committed.
+    if (-not $SkipKdeWatchdog -and $indicator) {
+        $legacyStartup = Get-MeshClipWatchdogStartupInfo
+        if ($legacyStartup.Exists -and -not $legacyStartup.OwnedAndUnchanged) { $notes.Add('The changed legacy watchdog shortcut was preserved.') }
+        elseif ($legacyStartup.Exists -and $PSCmdlet.ShouldProcess('Legacy watchdog login shortcut', 'Remove redundant project-owned launcher')) {
+            Remove-Item -LiteralPath (Get-MeshClipPaths).WatchdogShortcut -Force
+            if ((Get-MeshClipWatchdogStartupInfo).Exists) { throw 'Legacy watchdog shortcut removal did not verify.' }
+            $state.watchdogShortcutCreated = $false
+            Save-MeshClipState -State $state
+            $changed++
+        }
     }
     # Launch only after durable integration commit; never hide a launch failure
     # behind a successful configuration result. Session 0 cannot launch a tray.

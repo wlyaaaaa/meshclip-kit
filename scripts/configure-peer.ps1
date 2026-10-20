@@ -20,10 +20,10 @@ try {
         if (-not $WhatIfPreference -and -not (Test-MeshClipAdministrator)) { throw 'Firewall changes require elevation for the same Windows user.' }
         $audit = Get-MeshClipKdeFirewallAudit -Address $selected.Address
         if ($audit.Status -ne 'Available') { throw 'The effective firewall policy could not be audited.' }
-        if ($audit.BroadInboundAllow -gt 0 -and -not $DisableBroadKdeFirewallRules) { throw 'Broad unmanaged KDE rules exist. Review -WhatIf, then explicitly use -DisableBroadKdeFirewallRules.' }
+        if ($audit.BroadInboundAllow -gt 0 -and -not $DisableBroadKdeFirewallRules) { Write-Warning 'Broad non-project KDE firewall rules are unchanged; exact-peer configuration will continue. Disabling them requires an explicit -DisableBroadKdeFirewallRules after reviewing -WhatIf.' }
     }
     try {
-        if ($audit -and $audit.BroadInboundAllow -gt 0) {
+        if ($DisableBroadKdeFirewallRules -and $audit -and $audit.BroadInboundAllow -gt 0) {
             if (-not $PSCmdlet.ShouldProcess('Only the identified unmanaged KDE firewall rules', 'Disable broad inbound access with recorded preimages')) {
                 if (-not $WhatIfPreference) { throw 'Broad inbound access remains; configuration was not applied.' }
             }

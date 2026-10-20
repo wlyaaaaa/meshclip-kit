@@ -155,23 +155,6 @@ else {
     Add-Check 'KDE Connect login startup' 'WARN' 'Startup shortcut was not found.'
 }
 
-$watchdogStartup = Get-MeshClipWatchdogStartupInfo
-if ($onDemand -and -not $watchdogStartup.Exists) {
-    Add-Check 'KDE watchdog login startup' 'PASS' 'No watchdog startup is expected in on-demand mode.'
-}
-elseif ($onDemand) {
-    Add-Check 'KDE watchdog login startup' 'FAIL' 'Watchdog startup is present in on-demand mode.'
-}
-elseif ($watchdogStartup.Exists -and $watchdogStartup.OwnedAndUnchanged) {
-    Add-Check 'KDE watchdog login startup' 'PASS' 'The silent project-owned watchdog shortcut is unchanged.'
-}
-elseif ($watchdogStartup.Exists) {
-    Add-Check 'KDE watchdog login startup' 'FAIL' 'A watchdog shortcut exists but does not match the project-owned contract.'
-}
-else {
-    Add-Check 'KDE watchdog login startup' 'FAIL' 'The KDE Connect watchdog login shortcut is not installed.'
-}
-
 try {
     $watchdogTask = Get-MeshClipWatchdogTaskInfo
     if ($onDemand -and -not $watchdogTask.Exists) {
@@ -254,10 +237,10 @@ else {
     Get-MeshClipKdeFirewallAudit
 }
 if ($firewallAudit.Status -eq 'Available' -and $firewallAudit.BroadInboundAllow -gt 0) {
-    Add-Check 'Unmanaged KDE firewall' 'FAIL' 'Broad non-project inbound allow rules target KDE Connect; harden them before acceptance.'
+    Add-Check 'Unmanaged KDE firewall' 'INFO' 'Broad non-project inbound allow rules target KDE Connect; existing rules are unchanged.'
 }
 elseif ($firewallAudit.Status -eq 'Available' -and $firewallAudit.UnmanagedInboundAllow -gt 0) {
-    Add-Check 'Unmanaged KDE firewall' 'FAIL' 'Non-project inbound allow rules target KDE Connect; acceptance requires only project-owned exact-peer rules.'
+    Add-Check 'Unmanaged KDE firewall' 'INFO' 'Non-project inbound allow rules target KDE Connect; existing rules are unchanged.'
 }
 elseif ($firewallAudit.Status -eq 'Available') {
     Add-Check 'Unmanaged KDE firewall' 'PASS' 'No non-project inbound allow rule targets the KDE Connect daemon.'

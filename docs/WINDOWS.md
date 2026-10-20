@@ -20,9 +20,10 @@ limited scheduled task invokes the hidden watchdog launcher every two minutes;
 the single-instance mutex prevents duplicate watchdogs and lets Task Scheduler
 restore the watchdog if its process exits.
 
-The startup layers are intentionally independent: KDE Connect has its ordinary
-login shortcut, the hidden watchdog has a login shortcut, and Task Scheduler
-supervises the watchdog. None runs before Windows user sign-in. The task does
+KDE Connect keeps its ordinary login shortcut, and Task Scheduler starts and
+supervises the hidden watchdog. The installer removes an unchanged legacy
+watchdog login shortcut after committing the supervisor; altered shortcuts are
+preserved. Neither component runs before Windows user sign-in. The task does
 not wake the computer and Tailscale continues to use its own automatic Windows
 service and vendor recovery policy.
 
@@ -73,18 +74,20 @@ exact-peer inbound rules for TCP/UDP 1714-1764. They accept only an online
 Windows peer. When `-Peer` is omitted, exactly one other online Windows peer
 must exist. They do not accept pairing.
 
-If configuration reports broad non-project KDE Connect firewall rules, stop
-and review the hardening preview:
+Existing non-project KDE Connect firewall rules are informational and do not
+block configuration or acceptance. Windows creates KDE Connect rules when the
+user chooses Allow in its first-run firewall prompt. If you choose to disable
+broad rules, first confirm that LAN devices do not depend on them, then preview:
 
 ```powershell
 pwsh -File .\scripts\configure-peer.ps1 -Peer <OTHER_DEVICE_NAME> -DisableBroadKdeFirewallRules -WhatIf
 ```
 
-Only after that preview is understood, rerun it without `-WhatIf`. The script
-disables only the conflicting KDE Connect inbound rules, records them for
+Only after explicitly choosing this change, rerun without `-WhatIf`. The script
+disables only the identified broad KDE Connect inbound rules, records them for
 optional rollback, and still creates only the two exact-peer project rules.
 Any failure rolls back changes made by that run or reports the incomplete
-rollback as a blocking error.
+rollback for recovery before further configuration changes.
 
 ## 3. Pair
 
@@ -106,9 +109,8 @@ files into a public issue or chat.
 the same pairing request on both computers. Device discovery alone is not
 pairing evidence.
 
-On the main computer, all three watchdog checks must be `PASS`: the login shortcut must still target
-the project-owned `wscript.exe` wrapper, the supervisor task must retain its
-exact current-user limited contract, and exactly one current-session watchdog
+On the main computer, both watchdog checks must be `PASS`: the supervisor task
+must retain its exact current-user limited contract, and one current-session watchdog
 must have a fresh heartbeat.
 
 On the secondary computer, those checks pass when no watchdog layer exists;

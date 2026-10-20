@@ -45,14 +45,17 @@ Describe 'PowerShell source integrity' {
         }
     }
 
-    It 'treats broad unmanaged KDE inbound rules as a failing diagnostic' {
-        $doctor = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\doctor.ps1') -Raw
-
-        $doctor | Should -Match "Add-Check 'Unmanaged KDE firewall' 'FAIL'"
-        $doctor | Should -Not -Match "Add-Check 'Unmanaged KDE firewall' 'WARN'"
+    It 'reports existing non-project KDE inbound rules as informational' -TestCases @(@{Broad=2}, @{Broad=0}) {
+        param($Broad)
+        $ast = [Management.Automation.Language.Parser]::ParseInput((Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\doctor.ps1') -Raw), [ref]$null, [ref]$null)
+        $decision = $ast.Find({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -match '^\$firewallAudit\.Status'}, $true)
+        function Add-Check { param($Name, $Status, $Detail) [pscustomobject]@{Status=$Status} }
+        $firewallAudit = [pscustomobject]@{Status='Available';BroadInboundAllow=$Broad;UnmanagedInboundAllow=2}
+        $check = & ([ScriptBlock]::Create($decision.Extent.Text))
+        $check.Status | Should -Be 'INFO'
     }
 
-    It 'requires explicit broad-rule hardening before peer configuration can proceed' {
+    It 'keeps optional broad-rule hardening journaled for recovery' {
         $configure = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\configure-peer.ps1') -Raw
 
         $configure | Should -Match '\$DisableBroadKdeFirewallRules'
@@ -80,7 +83,6 @@ Describe 'PowerShell source integrity' {
 
         Test-Path -LiteralPath $watchdogPath -PathType Leaf | Should -BeTrue
         Test-Path -LiteralPath $wrapperPath -PathType Leaf | Should -BeTrue
-        $module | Should -Match 'New-MeshClipWatchdogStartupShortcut'
         $module | Should -Match 'New-MeshClipWatchdogTask'
         $install | Should -Match 'Start-MeshClipWatchdog'
         $install | Should -Match 'watchdogTaskCreated'

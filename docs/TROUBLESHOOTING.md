@@ -14,10 +14,14 @@
 - Confirm the exact-peer TCP and UDP 1714-1764 rules exist.
 - Restart KDE Connect or run `kdeconnect-cli --refresh`.
 
-## Configuration stops on broad KDE firewall rules
+## Existing broad KDE firewall rules are reported
 
-- Treat this as a security block, not a warning to ignore.
-- Run `configure-peer.ps1` with `-DisableBroadKdeFirewallRules -WhatIf` and
+- This is informational; configuration and acceptance can continue with the
+  existing rules enabled. Windows creates KDE Connect rules when the user
+  chooses Allow in its first-run firewall prompt.
+- If you explicitly choose to disable broad rules, first confirm that LAN
+  devices do not depend on them. Run `configure-peer.ps1` with
+  `-DisableBroadKdeFirewallRules -WhatIf` and
   verify that the plan only disables non-project inbound rules targeting the
   trusted KDE Connect daemon.
 - Rerun without `-WhatIf` only after reviewing the plan. Disabled rule
@@ -43,10 +47,9 @@
 
 ## KDE Connect stops after it was working
 
-- Run `doctor.ps1` and check all three watchdog rows: login startup, supervisor,
-  and runtime.
-- Rerun `install-windows.ps1 -WhatIf`, review the watchdog shortcut/start plan,
-  then run it normally. The installer refuses to overwrite a changed shortcut.
+- Run `doctor.ps1` and check both watchdog rows: supervisor and runtime.
+- Rerun `install-windows.ps1 -WhatIf`, review the supervisor/start plan and
+  legacy shortcut cleanup, then run it normally. Changed shortcuts are preserved.
 - A healthy watchdog uses one hidden current-session PowerShell process and a
   fresh status heartbeat. A current-user limited task checks the watchdog every
   two minutes. Neither component repairs Tailscale, firewall, pairing, or

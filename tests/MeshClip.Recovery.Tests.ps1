@@ -28,7 +28,6 @@ Describe 'Integration journal survives interruptions and partial recovery' {
             Mock Get-MeshClipStartupInfo {$exists=Test-Path -LiteralPath $script:fixturePaths.StartupShortcut;[pscustomobject]@{Exists=$exists;Matches=$exists;OwnedAndUnchanged=$exists}}
             Mock Get-MeshClipWatchdogStartupInfo {$exists=Test-Path -LiteralPath $script:fixturePaths.WatchdogShortcut;[pscustomobject]@{Exists=$exists;OwnedAndUnchanged=$exists}}
             Mock New-MeshClipStartupShortcut {[IO.File]::WriteAllText($script:fixturePaths.StartupShortcut,'fixture');[pscustomobject]@{Created=$true}}
-            Mock New-MeshClipWatchdogStartupShortcut {[IO.File]::WriteAllText($script:fixturePaths.WatchdogShortcut,'fixture');[pscustomobject]@{Created=$true}}
             Mock Get-MeshClipWatchdogTaskInfo {[pscustomobject]@{Exists=$false;Compliant=$false;OwnedAndUnchanged=$false}}
             Mock New-MeshClipWatchdogTask {throw 'Injected late task creation failure'}
             Mock Register-ScheduledTask {throw 'Real tasks are forbidden in this fixture'}
@@ -112,13 +111,29 @@ Describe 'Integration journal survives interruptions and partial recovery' {
             Should -Invoke Unregister-ScheduledTask -Times 0
         }
     }
-    It 'detects an existing watchdog conflict before changing unattended mode or startup' {
+    It 'detects an existing supervisor conflict before changing unattended mode or startup' {
         InModuleScope MeshClip.Common {
-            Mock Get-MeshClipWatchdogStartupInfo {[pscustomobject]@{Exists=$true;OwnedAndUnchanged=$false}}
+            Mock Get-MeshClipWatchdogTaskInfo {[pscustomobject]@{Exists=$true;Compliant=$false;OwnedAndUnchanged=$false}}
             {& $script:fixtureInstaller -NoLaunchKdeConnect -Confirm:$false}|Should -Throw '*different watchdog*'
             $script:fixtureUnattended|Should -BeFalse
             Should -Invoke New-MeshClipStartupShortcut -Times 0
             Should -Invoke Invoke-MeshClipExternal -Times 0
+        }
+    }
+    It 'configures a peer without disabling existing broad KDE rules by default' {
+        InModuleScope MeshClip.Common {
+            Mock Get-MeshClipKdeFirewallAudit {[pscustomobject]@{Status='Available';BroadInboundAllow=2;BroadRuleNames=@('fixture-broad')}}
+            Mock Get-NetFirewallRule {@([pscustomobject]@{DisplayName='fixture-TCP'}, [pscustomobject]@{DisplayName='fixture-UDP'})}
+            Mock New-MeshClipFirewallRules {[pscustomobject]@{CreatedNames=@()}}
+            Mock Get-MeshClipTailscaleAdapterAlias {'fixture'}
+            Mock Get-MeshClipFirewallRuleNames {@('fixture-TCP','fixture-UDP')}
+            Mock Test-MeshClipFirewallRuleCompliant {$true}
+            Mock Disable-NetFirewallRule {throw 'Broad rules must remain unchanged'}
+            & $script:fixtureConfigure -Peer fixture -Confirm:$false 3>$null
+            (Get-MeshClipCustomDevicesFromLines -Lines ([IO.File]::ReadAllLines($script:fixturePaths.KdeConfigPath))).Devices | Should -Contain '100.64.0.12'
+            (Get-MeshClipState).pendingTransaction | Should -BeNullOrEmpty
+            Should -Invoke New-MeshClipFirewallRules -Times 1
+            Should -Invoke Disable-NetFirewallRule -Times 0
         }
     }
     It 'configure entry preserves a recovery-required marker after a failed inverse' {
@@ -128,6 +143,24 @@ Describe 'Integration journal survives interruptions and partial recovery' {
             (Get-MeshClipState).pendingTransaction.phase|Should -Be 'recovery_required'
             [IO.File]::ReadAllText($script:fixturePaths.KdeConfigPath)|Should -Match 'external edit'
             Should -Invoke New-NetFirewallRule -Times 0
+        }
+    }
+    It 'retires legacy startup and still removes task-owned watchdog runtime on uninstall' {
+        InModuleScope MeshClip.Common -Parameters @{Repository=$script:repository} {
+            param($Repository)
+            [IO.File]::WriteAllText($script:fixturePaths.WatchdogShortcut,'fixture')
+            $state=Get-MeshClipState;$state.watchdogShortcutCreated=$true;$state.watchdogTaskCreated=$true;Save-MeshClipState $state
+            Mock Get-MeshClipWatchdogTaskInfo {[pscustomobject]@{Exists=$true;Compliant=$true;OwnedAndUnchanged=$true}}
+            & $script:fixtureInstaller -SkipTailscaleUnattended -NoLaunchKdeConnect -Confirm:$false|Out-Null
+            Test-Path -LiteralPath $script:fixturePaths.WatchdogShortcut|Should -BeFalse
+            Test-Path -LiteralPath $script:fixturePaths.StartupShortcut|Should -BeTrue
+            (Get-MeshClipState).watchdogShortcutCreated|Should -BeFalse
+            (Get-MeshClipState).watchdogTaskCreated|Should -BeTrue
+            Mock Remove-MeshClipWatchdogTask {}
+            Mock Stop-MeshClipWatchdogProcesses {}
+            $source=[IO.File]::ReadAllText((Join-Path $Repository 'scripts\uninstall.ps1'))
+            & ([ScriptBlock]::Create([regex]::Replace($source,'(?m)^Import-Module[^\r\n]*(?:\r?\n)?',''))) -Apply -Confirm:$false|Out-Null
+            Should -Invoke Stop-MeshClipWatchdogProcesses -Times 1
         }
     }
     It 'install WhatIf does not create integration state or shortcuts' {

@@ -13,7 +13,6 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'MeshClip.Common.psm1') -Force
 
 if (-not $IsWindows) {
     throw 'The KDE Connect watchdog can only run on Windows.'
@@ -28,6 +27,7 @@ try { $acquired = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] 
 $restartCount = 0
 $sessionId = (Get-Process -Id $PID).SessionId
 try {
+    Import-Module (Join-Path $PSScriptRoot 'MeshClip.Common.psm1') -Force
     Write-MeshClipWatchdogStatus -Status Starting -RestartCount $restartCount -IntervalSeconds $IntervalSeconds -WhatIf:$WhatIfPreference
     if ($InitialDelaySeconds -gt 0) {
         Start-Sleep -Seconds $InitialDelaySeconds

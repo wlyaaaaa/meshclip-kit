@@ -820,39 +820,6 @@ function Get-MeshClipWatchdogStartupInfo {
     }
 }
 
-function New-MeshClipWatchdogStartupShortcut {
-    [CmdletBinding()]
-    param()
-
-    $paths = Get-MeshClipPaths
-    foreach ($required in @($paths.WatchdogScript, $paths.WatchdogWrapper)) {
-        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
-            throw 'A MeshClip Kit watchdog component is missing.'
-        }
-    }
-    $existing = Get-MeshClipWatchdogStartupInfo
-    if ($existing.Exists) {
-        if (-not $existing.OwnedAndUnchanged) {
-            throw 'A different watchdog startup shortcut already exists. Refusing to overwrite it.'
-        }
-        return [pscustomobject]@{ Created = $false; Path = $paths.WatchdogShortcut }
-    }
-
-    $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
-    if (-not (Test-Path -LiteralPath $wscript -PathType Leaf)) {
-        throw 'The Windows Script Host executable was not found.'
-    }
-    [IO.Directory]::CreateDirectory((Split-Path -Parent $paths.WatchdogShortcut)) | Out-Null
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($paths.WatchdogShortcut)
-    $shortcut.TargetPath = $wscript
-    $shortcut.Arguments = '"' + $paths.WatchdogWrapper + '"'
-    $shortcut.WorkingDirectory = $PSScriptRoot
-    $shortcut.Description = 'MeshClip Kit silent KDE Connect watchdog'
-    $shortcut.Save()
-    [pscustomobject]@{ Created = $true; Path = $paths.WatchdogShortcut }
-}
-
 function ConvertTo-MeshClipSid {
     [CmdletBinding()]
     param(

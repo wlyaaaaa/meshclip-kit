@@ -22,12 +22,13 @@ if ($state.pendingTransaction) {
     throw 'An interrupted configuration transaction is recorded. Run doctor.ps1 and review the machine before uninstalling.'
 }
 
+$hasWatchdog = $state.watchdogShortcutCreated -or $state.watchdogTaskCreated
 Write-Host 'Removal plan:'
 Write-Host "- Remove $(@($state.addedPeers).Count) MeshClip Kit-added KDE custom peer entries."
 Write-Host "- Remove $(@($state.firewallRules).Count) recorded project-owned firewall rules."
 Write-Host "- Remove the login shortcut only if MeshClip Kit created it and it is unchanged."
-if ($state.watchdogShortcutCreated) {
-    Write-Host '- Stop the current-session watchdog and remove its login shortcut only if it is unchanged.'
+if ($hasWatchdog) {
+    Write-Host '- Stop the current-session watchdog and remove any unchanged legacy login shortcut.'
 }
 if ($state.watchdogTaskCreated) {
     Write-Host '- Remove the low-privilege watchdog supervisor task only if it is unchanged.'
@@ -112,10 +113,10 @@ if ((@($state.firewallRules).Count -gt 0 -or
         }
     }
 
-    if ($state.watchdogShortcutCreated -and $watchdogRemovalBlocked) {
+    if ($hasWatchdog -and $watchdogRemovalBlocked) {
         Write-Warning 'Watchdog startup and runtime were preserved because the supervisor task was not removed.'
     }
-    elseif ($state.watchdogShortcutCreated) {
+    elseif ($hasWatchdog) {
         $watchdogStartup = Get-MeshClipWatchdogStartupInfo
         if ($watchdogStartup.Exists -and -not $watchdogStartup.OwnedAndUnchanged) {
             Write-Warning 'Watchdog startup shortcut changed after setup; it and the running watchdog were preserved.'

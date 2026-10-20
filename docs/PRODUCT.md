@@ -19,7 +19,9 @@ networks:
   is wanted. Closing it is intentional; no watchdog restarts it.
 - Text copied on either computer becomes available on the other computer.
 - Files transfer in both directions and match SHA-256 checksums.
-- Firewall access is limited to the explicitly approved peer.
+- Project-created firewall rules limit access to the explicitly approved peer;
+  existing non-project KDE Connect rules are informational and remain unchanged
+  unless the user explicitly chooses to disable broad rules.
 - Unknown and unpaired devices cannot exchange data.
 
 Android is P1. The target experience is that, after the tablet connects to

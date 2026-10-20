@@ -37,13 +37,14 @@ device identity, addresses, Tailscale state, files, or firewall configuration.
   IPv4, KDE daemon path, and Tailscale interface. A rule that also contains
   `Any`, another address, port, program, or interface is rejected.
 - Outbound rules and public-network-wide allow rules are not created.
-- Broad non-project inbound rules targeting KDE Connect are a blocking
-  diagnostic. They are changed only when the operator explicitly supplies
+- Non-project inbound rules targeting KDE Connect are informational and do not
+  block configuration or acceptance. Windows creates KDE Connect rules when
+  the user chooses Allow in its first-run firewall prompt. Existing rules stay
+  enabled unless the operator explicitly supplies
   `-DisableBroadKdeFirewallRules`; the exact disabled rule identities are kept
   only in ignored local state for optional rollback.
-- Any remaining enabled non-project KDE Connect inbound rule still blocks final
-  acceptance, even if it appears narrow; the hardening switch does not take
-  ownership of such unrelated rules.
+- The optional switch changes only identified broad rules; it does not take
+  ownership of other non-project rules.
 - Every Windows device must independently approve every intended peer.
 
 ## Startup and watchdog policy
@@ -60,6 +61,9 @@ device identity, addresses, Tailscale state, files, or firewall configuration.
 - The supervisor's only action is the exact project-owned `wscript.exe` wrapper.
   The wrapper starts the exact watchdog script, and the watchdog starts only
   the trusted `kdeconnect-indicator.exe` when it is absent.
+- Task Scheduler is the watchdog's login launcher. Setup removes only an
+  unchanged legacy watchdog login shortcut; KDE Connect keeps its ordinary
+  login shortcut, including while automatic recovery is paused.
 - The watchdog does not inspect or persist clipboard or file content. Its local
   heartbeat contains only a schema, timestamp, bounded status, and restart
   count.
